@@ -759,10 +759,14 @@ impl Contract {
         let budget = job.budget;
         let worker = self.node(job.worker_node).clone();
         let worker_account = worker.holder;
-        let job_status = job.status.clone();
 
-        // Record the spend against the coordinator's authority.
+        // Transfer the committed budget to spent (proper accounting).
+        // The job's budget was reserved in committed_to_children; now it becomes spent.
         let mut coordinator = coordinator;
+        coordinator.committed_to_children = coordinator
+            .committed_to_children
+            .checked_sub(budget)
+            .expect("commitment underflow");
         coordinator.spent = coordinator.spent.checked_add(budget).expect("overflow");
         self.set_node(job.coordinator_node, coordinator);
 
@@ -771,7 +775,7 @@ impl Contract {
 
         // Actually transfer the payment to the worker via Promise.
         // The transfer happens asynchronously; settled in on_payout.
-        Promise::new(worker_account).transfer(NearToken::from_yoctonear(budget));
+        Promise::new(worker_account).transfer(NearToken::from_yoctonear(budget)).detach();
     }
 
     /// ---------- views ----------

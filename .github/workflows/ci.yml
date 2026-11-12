@@ -1,0 +1,40 @@
+name: CALIPER CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Build contract (wasm)
+        working-directory: contract
+        run: cargo build --release --target wasm32-unknown-unknown
+
+      - name: Run contract tests
+        working-directory: contract
+        run: cargo test
+
+      - name: Run independent verifier on valid fixture
+        working-directory: contract
+        run: npx tsx verify/verify.ts verify/sample-valid.json
+
+      - name: Run independent verifier rejects invalid fixtures
+        working-directory: contract
+        run: |
+          set +e
+          npx tsx verify/verify.ts verify/sample-invalid-attenuation.json >/dev/null 2>&1
+          if [ $? -eq 0 ]; then echo "ERROR: attenuation fixture should fail"; exit 1; fi
+          npx tsx verify/verify.ts verify/sample-invalid-commitment.json >/dev/null 2>&1
+          if [ $? -eq 0 ]; then echo "ERROR: commitment fixture should fail"; exit 1; fi
+          echo "Both invalid fixtures correctly rejected"

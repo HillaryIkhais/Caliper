@@ -1,0 +1,16 @@
+[package]
+name = "caliper"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { version = "5.29", features = ["legacy", "unit-testing"] }
+borsh = "0.10"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1

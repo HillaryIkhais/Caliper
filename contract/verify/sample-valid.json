@@ -1,0 +1,59 @@
+{
+  "root": 1,
+  "owner": "owner.near",
+  "nodes": {
+    "1": {
+      "id": 1,
+      "parent": null,
+      "holder": "owner.near",
+      "permissions": {
+        "recipients": ["vendor.near", "research-vendor.near", "verify-vendor.near"],
+        "assets": [],
+        "max_per_tx": "1000000000000000000000000000",
+        "may_delegate": true
+      },
+      "allocation": "1000000000000000000000000000",
+      "spent": "0",
+      "committed_to_children": "800000000000000000000000000",
+      "expiry": null,
+      "active": true,
+      "children": [2, 3]
+    },
+    "2": {
+      "id": 2,
+      "parent": 1,
+      "holder": "coordinator.near",
+      "permissions": {
+        "recipients": ["research-vendor.near", "verify-vendor.near"],
+        "assets": [],
+        "max_per_tx": "600000000000000000000000000",
+        "may_delegate": true
+      },
+      "allocation": "600000000000000000000000000",
+      "spent": "0",
+      "committed_to_children": "0",
+      "expiry": null,
+      "active": true,
+      "children": []
+    },
+    "3": {
+      "id": 3,
+      "parent": 1,
+      "holder": "verifier.near",
+      "permissions": {
+        "recipients": ["verify-vendor.near"],
+        "assets": [],
+        "max_per_tx": "200000000000000000000000000",
+        "may_delegate": false
+      },
+      "allocation": "200000000000000000000000000",
+      "spent": "0",
+      "committed_to_children": "0",
+      "expiry": null,
+      "active": true,
+      "children": []
+    }
+  },
+  "executions": [],
+  "revocations": []
+}

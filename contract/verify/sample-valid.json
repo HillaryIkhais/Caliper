@@ -17,7 +17,8 @@
       "committed_to_children": "800000000000000000000000000",
       "expiry": null,
       "active": true,
-      "children": [2, 3]
+      "children": [2, 3],
+      "created_at": 1
     },
     "2": {
       "id": 2,
@@ -34,7 +35,8 @@
       "committed_to_children": "0",
       "expiry": null,
       "active": true,
-      "children": []
+      "children": [],
+      "created_at": 2
     },
     "3": {
       "id": 3,
@@ -51,9 +53,11 @@
       "committed_to_children": "0",
       "expiry": null,
       "active": true,
-      "children": []
+      "children": [],
+      "created_at": 3
     }
   },
   "executions": [],
-  "revocations": []
+  "revocations": [],
+  "jobs": []
 }

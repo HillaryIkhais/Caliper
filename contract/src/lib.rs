@@ -34,6 +34,8 @@ pub struct Node {
     pub active: bool,
     /// Direct children of this node.
     pub children: Vec<AuthorityId>,
+    /// Block height when this node was created.
+    pub created_at: u64,
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -111,7 +113,7 @@ pub struct Job {
     /// Hash of the acceptance criteria / test suite (off-chain, buyer-defined).
     pub acceptance_criteria_hash: String,
     /// File paths that the worker must not modify (tests, CI config, build scripts).
-    /// The buyer pins these before hiring; the worker cannot substitute its own tests.
+    /// The buyer pins these before hiring; the worker cannot substitute their own tests.
     pub protected_files: Vec<String>,
     /// Hash of the submitted deliverable artifact (off-chain).
     pub deliverable_hash: Option<String>,
@@ -119,6 +121,8 @@ pub struct Job {
     pub modified_files: Option<Vec<String>>,
     /// Whether the worker modified any protected file (tampering detected).
     pub tampering_detected: bool,
+    /// The verifier node id authorized to record verification results.
+    pub verifier_node: Option<AuthorityId>,
     /// Hash of the independent verification report (off-chain, runner-signed).
     pub independent_report_hash: Option<String>,
     /// Result of the independent verification run.
@@ -345,6 +349,7 @@ impl Contract {
         );
 
         let id = self.next_authority_id;
+        let block_height = env::block_height();
         self.next_authority_id += 1;
 
         let node = Node {
@@ -358,6 +363,7 @@ impl Contract {
             expiry: None,
             active: true,
             children: vec![],
+            created_at: block_height,
         };
         self.nodes.insert(&id, &node);
         self.add_holder(&holder, id);
@@ -412,6 +418,7 @@ impl Contract {
             expiry,
             active: true,
             children: vec![],
+            created_at: block_height,
         };
         Self::check_attenuation(&parent, &child_node);
 
@@ -574,15 +581,14 @@ impl Contract {
     }
 
     /// Create a subcontracting job. The coordinator allocates budget from its
-    /// uncommitted authority and assigns a worker. The acceptance criteria hash
-    /// Create a subcontracting job. The coordinator allocates budget from its
-    /// uncommitted authority and assigns a worker. The acceptance criteria hash
-    /// and protected file list are buyer-defined and immutable — the worker
-    /// cannot replace the acceptance suite with their own tests.
+    /// uncommitted authority and assigns a worker, plus an independent verifier.
+    /// The acceptance criteria hash and protected file list are buyer-defined
+    /// and immutable — the worker cannot replace the acceptance suite with their own tests.
     pub fn create_job(
         &mut self,
         coordinator_node: AuthorityId,
         worker_node: AuthorityId,
+        verifier_node: AuthorityId,
         budget: U128,
         acceptance_criteria_hash: String,
         protected_files: Vec<String>,
@@ -603,9 +609,7 @@ impl Contract {
             "job budget exceeds coordinator's uncommitted allocation"
         );
 
-        let worker = self.node(worker_node).clone();
-        assert!(
-            self.is_authority_valid(worker_node, block_height),
+        assert!(self.is_authority_valid(worker_node, block_height),
             "worker authority is revoked or expired"
         );
         // Worker must be a descendant of the coordinator (or the coordinator itself).
@@ -615,6 +619,16 @@ impl Contract {
             "worker must be the coordinator or a descendant"
         );
 
+        assert!(self.is_authority_valid(verifier_node, block_height),
+            "verifier authority is revoked or expired"
+        );
+        // Verifier must be a descendant of the coordinator (or the coordinator itself).
+        assert!(
+            verifier_node == coordinator_node
+                || self.authority_chain(verifier_node).iter().any(|n| n.id == coordinator_node),
+            "verifier must be the coordinator or a descendant"
+        );
+
         let id = self.next_job_id;
         self.next_job_id += 1;
 
@@ -622,6 +636,7 @@ impl Contract {
             id,
             coordinator_node,
             worker_node,
+            verifier_node: Some(verifier_node),
             budget: amount,
             acceptance_criteria_hash,
             protected_files,
@@ -688,8 +703,8 @@ impl Contract {
 
     /// An authorized independent verifier records the test result for a submitted
     /// deliverable. The report hash is bound to the exact artifact and acceptance
-    /// criteria — it cannot be reused for a different artifact. Only callable by
-    /// the verifier account (not the worker).
+    /// criteria — it cannot be reused for a different artifact. Only callable by the
+    /// job's pre-designated verifier (not the worker or anyone else).
     pub fn record_independent_verification(
         &mut self,
         job_id: JobId,
@@ -699,6 +714,12 @@ impl Contract {
         let caller = env::predecessor_account_id();
         let block_height = env::block_height();
 
+        let job = self.jobs.get(&job_id).expect("job not found");
+        let verifier_id = job.verifier_node.expect("job has no verifier");
+        let verifier = self.node(verifier_id);
+        assert_eq!(&caller, &verifier.holder, "only the designated verifier may record results");
+        
+        drop(job); // release the borrow
         let mut job = self.jobs.get(&job_id).expect("job not found");
         assert!(
             matches!(job.status, JobStatus::Submitted),
@@ -715,7 +736,7 @@ impl Contract {
     /// coordinator may accept. Acceptance requires:
     /// 1. The job has passed independent verification (independent_passed == true).
     /// 2. No tampering was detected (tampering_detected == false).
-    /// Funds move from the coordinator's committed budget to the worker as spent.
+    /// Funds are transferred from coordinator to worker via Promise-based settlement.
     pub fn accept_job(&mut self, job_id: JobId) {
         let caller = env::predecessor_account_id();
 
@@ -735,13 +756,22 @@ impl Contract {
             "tampering detected: worker modified protected files"
         );
 
+        let budget = job.budget;
+        let worker = self.node(job.worker_node).clone();
+        let worker_account = worker.holder;
+        let job_status = job.status.clone();
+
         // Record the spend against the coordinator's authority.
         let mut coordinator = coordinator;
-        coordinator.spent = coordinator.spent.checked_add(job.budget).expect("overflow");
+        coordinator.spent = coordinator.spent.checked_add(budget).expect("overflow");
         self.set_node(job.coordinator_node, coordinator);
 
         job.status = JobStatus::Accepted;
         self.jobs.insert(&job_id, &job);
+
+        // Actually transfer the payment to the worker via Promise.
+        // The transfer happens asynchronously; settled in on_payout.
+        Promise::new(worker_account).transfer(NearToken::from_yoctonear(budget));
     }
 
     /// ---------- views ----------
@@ -1124,7 +1154,7 @@ mod tests {
         context(owner(), 100);
         let root = contract.create_root(bob(), U128(100), root_permissions());
 
-        // COORDINATOR delegates to WORKER (carol) with 40 NEAR
+        // COORDINATOR (bob) delegates to WORKER (carol) with 40 NEAR
         context(bob(), 40);
         let worker = contract.delegate(
             root,
@@ -1139,12 +1169,28 @@ mod tests {
             None,
         );
 
+        // COORDINATOR also delegates to VERIFIER (dave) with 10 NEAR
+        context(bob(), 10);
+        let verifier = contract.delegate(
+            root,
+            "dave.near".parse().unwrap(),
+            Permissions {
+                recipients: vec!["vendor.near".parse().unwrap()],
+                assets: vec![],
+                max_per_tx: 10,
+                may_delegate: false,
+            },
+            U128(10),
+            None,
+        );
+
         // COORDINATOR creates a job for WORKER with budget 20, acceptance criteria,
-        // and protected files (the buyer's tests and CI config that the worker must not touch)
+        // and protected files (the buyer's tests and CI config)
         context(bob(), 20);
         let job_id = contract.create_job(
             root,
             worker,
+            verifier,
             U128(20),
             "sha256:acceptance-tests-v1".to_string(),
             vec![
@@ -1153,6 +1199,10 @@ mod tests {
             ],
         );
         assert!(job_id > 0);
+
+        // Verify budget committed from coordinator (40 + 10 + 20 = 70)
+        let root_node = contract.get_node(root).unwrap();
+        assert_eq!(root_node.committed_to_children, 70);
 
         // WORKER submits a deliverable that modifies protected test files (tampering)
         // to make the failing test pass artificially.
@@ -1170,9 +1220,8 @@ mod tests {
             Some(vec!["src/lib.rs".to_string(), "tests/auth_test.rs".to_string()])
         );
 
-        // Even if an independent verifier ran tests and they passed,
-        // tampering must block acceptance.
-        context(owner(), 0);
+        // VERIFIER runs tests → PASSES (but tampering blocks payment)
+        context("dave.near".parse().unwrap(), 0);
         contract.record_independent_verification(
             job_id,
             "sha256:verification-report-pass".to_string(),
@@ -1201,7 +1250,7 @@ mod tests {
         context(owner(), 100);
         let root = contract.create_root(bob(), U128(100), root_permissions());
 
-        // COORDINATOR delegates to WORKER (carol) with 40 NEAR
+        // COORDINATOR (bob) delegates to WORKER (carol) with 40 NEAR
         context(bob(), 40);
         let worker = contract.delegate(
             root,
@@ -1216,20 +1265,36 @@ mod tests {
             None,
         );
 
+        // COORDINATOR also delegates to VERIFIER (dave) with 10 NEAR
+        context(bob(), 10);
+        let verifier = contract.delegate(
+            root,
+            "dave.near".parse().unwrap(),
+            Permissions {
+                recipients: vec!["vendor.near".parse().unwrap()],
+                assets: vec![],
+                max_per_tx: 10,
+                may_delegate: false,
+            },
+            U128(10),
+            None,
+        );
+
         // COORDINATOR creates a job for WORKER with budget 20
         context(bob(), 20);
         let job_id = contract.create_job(
             root,
             worker,
+            verifier,
             U128(20),
             "sha256:acceptance-tests-v1".to_string(),
             vec!["tests/auth_test.rs".to_string()],
         );
         assert!(job_id > 0);
 
-        // Verify budget committed from coordinator (40 delegation + 20 job = 60)
+        // Verify budget committed from coordinator (40 + 10 + 20 = 70)
         let root_node = contract.get_node(root).unwrap();
-        assert_eq!(root_node.committed_to_children, 60);
+        assert_eq!(root_node.committed_to_children, 70);
 
         // WORKER submits a CLEAN deliverable (only source files, no protected files)
         context(carol(), 0);
@@ -1242,8 +1307,8 @@ mod tests {
         assert!(matches!(job.status, JobStatus::Submitted));
         assert!(!job.tampering_detected);
 
-        // INDEPENDENT VERIFIER runs tests → PASSES
-        context(owner(), 0);
+        // VERIFIER runs tests → PASSES
+        context("dave.near".parse().unwrap(), 0);
         contract.record_independent_verification(
             job_id,
             "sha256:verification-report-pass".to_string(),
@@ -1283,10 +1348,26 @@ mod tests {
             None,
         );
 
+        // COORDINATOR also delegates to VERIFIER (dave) with 10 NEAR
+        context(bob(), 10);
+        let verifier = contract.delegate(
+            root,
+            "dave.near".parse().unwrap(),
+            Permissions {
+                recipients: vec!["vendor.near".parse().unwrap()],
+                assets: vec![],
+                max_per_tx: 10,
+                may_delegate: false,
+            },
+            U128(10),
+            None,
+        );
+
         context(bob(), 20);
         let job_id = contract.create_job(
             root,
             worker,
+            verifier,
             U128(20),
             "sha256:acceptance-tests-v1".to_string(),
             vec!["tests/auth_test.rs".to_string()],
@@ -1300,8 +1381,8 @@ mod tests {
             vec!["src/lib.rs".to_string()],
         );
 
-        // INDEPENDENT VERIFIER runs tests → FAILS (bug still exists)
-        context(owner(), 0);
+        // VERIFIER runs tests → FAILS (bug still exists)
+        context("dave.near".parse().unwrap(), 0);
         contract.record_independent_verification(
             job_id,
             "sha256:verification-report-fail".to_string(),
@@ -1318,6 +1399,10 @@ mod tests {
         assert!(result.is_err());
         let job = contract.get_job(job_id).unwrap();
         assert!(matches!(job.status, JobStatus::Submitted));
+        
+        // Coordinator's spent counter should be 0 (no payment released)
+        let root_node = contract.get_node(root).unwrap();
+        assert_eq!(root_node.spent, 0);
     }
 
     #[test]

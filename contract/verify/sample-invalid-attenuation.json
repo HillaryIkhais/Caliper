@@ -17,7 +17,8 @@
       "committed_to_children": "0",
       "expiry": null,
       "active": true,
-      "children": [2]
+      "children": [2],
+      "created_at": 1
     },
     "2": {
       "id": 2,
@@ -34,9 +35,11 @@
       "committed_to_children": "0",
       "expiry": null,
       "active": true,
-      "children": []
+      "children": [],
+      "created_at": 2
     }
   },
   "executions": [],
-  "revocations": []
+  "revocations": [],
+  "jobs": []
 }

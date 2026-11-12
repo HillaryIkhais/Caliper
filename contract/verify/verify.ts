@@ -1,18 +1,18 @@
 /**
  * CALIPER Independent Verifier
  *
- * Reconstructs the authority tree from a snapshot of the contract's state and
+ * Reconstructs the authority tree and job lifecycle from a snapshot of the contract's state and
  * checks the four CALIPER guarantees:
  *   1. Authority attenuation — every child's permissions ⊆ its parent's.
  *   2. Commitment isolation — spent + sum(children allocations) <= allocation.
  *   3. Branch revocation — revoking a node invalidates every descendant.
- *   4. Independent verification — every execution ties back to a valid node.
+ *   4. Independent verification — every execution, job, and verification ties back to valid nodes.
  *
  * Usage:
  *   npx tsx verify/verify.ts <state.json> [current_block_height]
  *
  * The state.json is exported from the deployed contract's view methods:
- *   get_root, get_node (recursively), list_executions, list_revocations, get_owner.
+ *   get_root, get_node (recursively), list_executions, list_revocations, get_owner, list_jobs.
  *
  * Exits 0 if all invariants hold, non-zero otherwise.
  */
@@ -22,6 +22,7 @@ import * as fs from "fs";
 type AccountId = string;
 type Balance = string; // yoctoNEAR as string
 type AuthorityId = number;
+type JobId = number;
 
 interface Node {
     id: AuthorityId;
@@ -48,7 +49,7 @@ interface Execution {
     amount: Balance;
     asset: AccountId | null;
     block_height: number;
-    status: string;
+    status: string; // "Pending" | "Settled" | "Rejected"
 }
 
 interface Revocation {
@@ -57,12 +58,32 @@ interface Revocation {
     block_height: number;
 }
 
+interface Job {
+    id: JobId;
+    coordinator_node: AuthorityId;
+    worker_node: AuthorityId;
+    verifier_node: AuthorityId | null;
+    budget: Balance;
+    acceptance_criteria_hash: string;
+    protected_files: string[];
+    deliverable_hash: string | null;
+    modified_files: string[] | null;
+    tampering_detected: boolean;
+    independent_report_hash: string | null;
+    independent_passed: boolean | null;
+    status: string; // "Open" | "Submitted" | "Accepted" | "Rejected" | "Cancelled"
+    created_at: number;
+    submitted_at: number | null;
+    resolved_at: number | null;
+}
+
 interface State {
     root: AuthorityId | null;
     owner: AccountId;
     nodes: Record<string, Node>;
     executions: Execution[];
     revocations: Revocation[];
+    jobs: Job[];
 }
 
 function toBigInt(s: Balance | number): bigint {
@@ -76,14 +97,15 @@ function b2s(b: bigint): string {
 interface Violation {
     node?: AuthorityId;
     execution?: number;
+    job?: JobId;
     type: string;
     detail: string;
 }
 
 const violations: Violation[] = [];
 
-function fail(type: string, detail: string, node?: AuthorityId, execution?: number) {
-    violations.push({ type, detail, node, execution });
+function fail(type: string, detail: string, node?: AuthorityId, execution?: number, job?: JobId) {
+    violations.push({ type, detail, node, execution, job });
 }
 
 function verify(state: State, currentBlock: number | null) {
@@ -206,12 +228,84 @@ function verify(state: State, currentBlock: number | null) {
         }
     }
 
+    // 4b. Job verification: every job's status changes are valid and authorized
+    for (const job of state.jobs) {
+        const jobNode = nodesById.get(job.id);
+        
+        // Coordinator must exist and be valid at job creation
+        const coordinator = nodesById.get(job.coordinator_node);
+        if (!coordinator) {
+            fail("job", `job ${job.id} has unknown coordinator node ${job.coordinator_node}`, job.coordinator_node, undefined, job.id);
+        }
+        
+        // Worker must exist and be descendant of coordinator
+        const worker = nodesById.get(job.worker_node);
+        if (!worker) {
+            fail("job", `job ${job.id} has unknown worker node ${job.worker_node}`, job.worker_node, undefined, job.id);
+        }
+        if (job.coordinator_node !== root && !isDescendant(nodesById, job.worker_node, job.coordinator_node)) {
+            fail("job", `job ${job.id} worker is not a descendant of coordinator`, job.worker_node, undefined, job.id);
+        }
+        
+        // Verifier must be a descendant of coordinator if specified
+        if (job.verifier_node != null) {
+            const verifier = nodesById.get(job.verifier_node);
+            if (!verifier) {
+                fail("job", `job ${job.id} has unknown verifier node ${job.verifier_node}`, job.verifier_node, undefined, job.id);
+            } else if (job.coordinator_node !== root && !isDescendant(nodesById, job.verifier_node, job.coordinator_node)) {
+                fail("job", `job ${job.id} verifier is not a descendant of coordinator`, job.verifier_node, undefined, job.id);
+            }
+        }
+
+        // Job creation time ordering
+        if (job.created_at < coordinator.created_at || job.created_at < worker.created_at) {
+            fail("job", `job ${job.id} created before its nodes existed`, undefined, undefined, job.id);
+        }
+
+        // Submission time must be after creation
+        if (job.submitted_at != null && job.submitted_at < job.created_at) {
+            fail("job", `job ${job.id} submitted before creation`, undefined, undefined, job.id);
+        }
+
+        // Resolved time must be after submission if set
+        if (job.resolved_at != null && job.submitted_at != null && job.resolved_at < job.submitted_at) {
+            fail("job", `job ${job.id} resolved before submission`, undefined, undefined, job.id);
+        }
+
+        // Accepted jobs must have passed independent verification and no tampering
+        if (job.status === "Accepted") {
+            if (job.independent_passed !== true) {
+                fail("job", `job ${job.id} is Accepted but independent_passed is not true`, undefined, undefined, job.id);
+            }
+            if (job.tampering_detected) {
+                fail("job", `job ${job.id} is Accepted but tampering was detected`, undefined, undefined, job.id);
+            }
+        }
+
+        // Submitted jobs can not be Accepted without verification
+        if (job.status === "Accepted" && job.independent_passed === null) {
+            fail("job", `job ${job.id} is Accepted but no independent_passed value`, undefined, undefined, job.id);
+        }
+    }
+
     // Revocations must reference known nodes.
     for (const rev of state.revocations) {
         if (!nodesById.has(rev.node_id)) {
             fail("revocation", `revocation references unknown node ${rev.node_id}`, rev.node_id);
         }
     }
+}
+
+// Helper to check if a node is a descendant of another
+function isDescendant(nodesById: Map<AuthorityId, Node>, nodeId: AuthorityId, ancestorId: AuthorityId): boolean {
+    let current: AuthorityId | null = nodeId;
+    while (current != null) {
+        const node = nodesById.get(current);
+        if (!node) return false;
+        if (node.id === ancestorId) return true;
+        current = node.parent;
+    }
+    return false;
 }
 
 async function main() {
@@ -234,12 +328,12 @@ async function main() {
 
     if (violations.length === 0) {
         console.log("VERIFIED: all CALIPER authority invariants hold");
-        console.log(`  root: ${state.root}  nodes: ${Object.keys(state.nodes).length}  executions: ${state.executions.length}  revocations: ${state.revocations.length}`);
+        console.log(`  root: ${state.root}  nodes: ${Object.keys(state.nodes).length}  executions: ${state.executions.length}  revocations: ${state.revocations.length}  jobs: ${state.jobs.length}`);
         process.exit(0);
     } else {
         console.log("FAILED: authority invariant violations detected:");
         for (const v of violations) {
-            const loc = v.node != null ? `node ${v.node}` : (v.execution != null ? `execution ${v.execution}` : "tree");
+            const loc = v.node != null ? `node ${v.node}` : (v.execution != null ? `execution ${v.execution}` : (v.job != null ? `job ${v.job}` : "tree"));
             console.log(`  [${v.type}] ${loc}: ${v.detail}`);
         }
         process.exit(1);

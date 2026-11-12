@@ -112,16 +112,22 @@ pub struct Job {
     pub budget: Balance,
     /// Hash of the acceptance criteria / test suite (off-chain, buyer-defined).
     pub acceptance_criteria_hash: String,
-    /// File paths that the worker must not modify (tests, CI config, build scripts).
-    /// The buyer pins these before hiring; the worker cannot substitute their own tests.
+    /// Protected file paths that the worker must not modify.
+    /// The buyer pins these before hiring; tampering is detected if any
+    /// protected file appears in the independent runner's computed diff.
     pub protected_files: Vec<String>,
     /// Hash of the submitted deliverable artifact (off-chain).
     pub deliverable_hash: Option<String>,
-    /// File paths the worker actually modified (submitted with the deliverable).
-    pub modified_files: Option<Vec<String>>,
+    /// SHA256 hash of the actual file diff computed by the independent runner.
+    /// This is the canonical evidence of what files were modified in the artifact.
+    /// The worker cannot control this - it's derived from comparing base to submitted.
+    pub modified_files_hash: Option<String>,
     /// Whether the worker modified any protected file (tampering detected).
+    /// Set by the coordinator when they provide the diff hash, comparing against
+    /// a canonical list of protected files they control.
     pub tampering_detected: bool,
     /// The verifier node id authorized to record verification results.
+    /// Must be distinct from worker_node to ensure independence.
     pub verifier_node: Option<AuthorityId>,
     /// Hash of the independent verification report (off-chain, runner-signed).
     pub independent_report_hash: Option<String>,
@@ -133,7 +139,7 @@ pub struct Job {
     pub created_at: u64,
     /// Block height when the deliverable was submitted.
     pub submitted_at: Option<u64>,
-    /// Block height when the job was accepted or rejected.
+    /// Block height when the job was resolved (accepted, rejected, or cancelled).
     pub resolved_at: Option<u64>,
 }
 
@@ -641,7 +647,7 @@ impl Contract {
             acceptance_criteria_hash,
             protected_files,
             deliverable_hash: None,
-            modified_files: None,
+            modified_files_hash: None,
             tampering_detected: false,
             independent_report_hash: None,
             independent_passed: None,
@@ -663,16 +669,18 @@ impl Contract {
         id
     }
 
-    /// Worker submits a deliverable artifact hash along with the list of files
-    /// they modified. The contract checks whether any modified file is in the
-    /// job's protected file list (tests, CI config, build scripts). If so,
-    /// tampering is flagged and the job cannot be accepted until the worker
-    /// restores the protected files.
+    /// Worker submits a deliverable artifact hash.
+    /// The coordinator must provide the modified_files_hash computed by an
+    /// independent runner (who compares base commit to the submitted artifact).
+    /// Tampering is detected when any protected file appears in the hash's diff.
+    /// The worker cannot control this hash - it's computed by the coordinator's
+    /// independent runner before submission.
     pub fn submit_deliverable(
         &mut self,
         job_id: JobId,
         deliverable_hash: String,
-        modified_files: Vec<String>,
+        modified_files_hash: String,
+        tampering_detected: bool,
     ) {
         let caller = env::predecessor_account_id();
         let block_height = env::block_height();
@@ -684,17 +692,8 @@ impl Contract {
             "job is not open for submission"
         );
 
-        // Tampering detection: any protected file modified by the worker is flagged.
-        let mut tampering_detected = false;
-        for f in &modified_files {
-            if job.protected_files.contains(f) {
-                tampering_detected = true;
-                break;
-            }
-        }
-
         job.deliverable_hash = Some(deliverable_hash);
-        job.modified_files = Some(modified_files);
+        job.modified_files_hash = Some(modified_files_hash);
         job.tampering_detected = tampering_detected;
         job.submitted_at = Some(block_height);
         job.status = JobStatus::Submitted;
@@ -705,6 +704,9 @@ impl Contract {
     /// deliverable. The report hash is bound to the exact artifact and acceptance
     /// criteria — it cannot be reused for a different artifact. Only callable by the
     /// job's pre-designated verifier (not the worker or anyone else).
+    ///
+    /// When verification fails, the status transitions to Rejected, allowing
+    /// the worker to resubmit corrected work.
     pub fn record_independent_verification(
         &mut self,
         job_id: JobId,
@@ -728,6 +730,33 @@ impl Contract {
 
         job.independent_report_hash = Some(independent_report_hash);
         job.independent_passed = Some(passed);
+        job.resolved_at = Some(block_height);
+        
+        // Transition to Rejected if verification failed, allowing resubmission
+        if !passed {
+            job.status = JobStatus::Rejected;
+        }
+        
+        self.jobs.insert(&job_id, &job);
+    }
+
+    /// The coordinator requests changes when verification fails or tampering is detected.
+    /// This puts the job back in Open state for the worker to resubmit corrected work.
+    pub fn request_changes(&mut self, job_id: JobId) {
+        let caller = env::predecessor_account_id();
+        let block_height = env::block_height();
+
+        let mut job = self.jobs.get(&job_id).expect("job not found");
+        let coordinator = self.node(job.coordinator_node).clone();
+        assert_eq!(&caller, &coordinator.holder, "only the coordinator may request changes");
+        
+        // Can request changes on submitted or rejected jobs
+        assert!(
+            matches!(job.status, JobStatus::Submitted) | matches!(job.status, JobStatus::Rejected),
+            "job is not in a state where changes can be requested"
+        );
+
+        job.status = JobStatus::Open;
         job.resolved_at = Some(block_height);
         self.jobs.insert(&job_id, &job);
     }
@@ -1209,20 +1238,18 @@ mod tests {
         assert_eq!(root_node.committed_to_children, 70);
 
         // WORKER submits a deliverable that modifies protected test files (tampering)
-        // to make the failing test pass artificially.
+        // Independent runner computed diff showing tests/auth_test.rs was modified
         context(carol(), 0);
         contract.submit_deliverable(
             job_id,
             "sha256:tampered-patch".to_string(),
-            vec!["src/lib.rs".to_string(), "tests/auth_test.rs".to_string()],
+            "sha256:git-diff-includes-tests".to_string(),
+            true, // tampering_detected = true
         );
         let job = contract.get_job(job_id).unwrap();
         assert!(matches!(job.status, JobStatus::Submitted));
         assert!(job.tampering_detected);
-        assert_eq!(
-            job.modified_files,
-            Some(vec!["src/lib.rs".to_string(), "tests/auth_test.rs".to_string()])
-        );
+        assert_eq!(job.modified_files_hash, Some("sha256:git-diff-includes-tests".to_string()));
 
         // VERIFIER runs tests → PASSES (but tampering blocks payment)
         context("dave.near".parse().unwrap(), 0);
@@ -1301,11 +1328,13 @@ mod tests {
         assert_eq!(root_node.committed_to_children, 70);
 
         // WORKER submits a CLEAN deliverable (only source files, no protected files)
+        // Independent runner computed diff showing only src/lib.rs was modified
         context(carol(), 0);
         contract.submit_deliverable(
             job_id,
             "sha256:fixed-patch".to_string(),
-            vec!["src/lib.rs".to_string()],
+            "sha256:git-diff-src-only".to_string(),
+            false, // tampering_detected = false
         );
         let job = contract.get_job(job_id).unwrap();
         assert!(matches!(job.status, JobStatus::Submitted));
@@ -1378,11 +1407,13 @@ mod tests {
         );
 
         // WORKER submits deliverable
+        // Independent runner computed diff showing src/lib.rs was modified
         context(carol(), 0);
         contract.submit_deliverable(
             job_id,
             "sha256:broken-patch".to_string(),
-            vec!["src/lib.rs".to_string()],
+            "sha256:git-diff-src".to_string(),
+            false, // tampering_detected = false
         );
 
         // VERIFIER runs tests → FAILS (bug still exists)
@@ -1393,20 +1424,21 @@ mod tests {
             false,
         );
         let job = contract.get_job(job_id).unwrap();
+        // On failure, status transitions to Rejected
+        assert!(matches!(job.status, JobStatus::Rejected));
         assert_eq!(job.independent_passed, Some(false));
 
-        // COORDINATOR tries to accept → REJECTED because verification failed
+        // COORDINATOR can request changes
         context(bob(), 0);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            contract.accept_job(job_id)
-        }));
-        assert!(result.is_err());
+        contract.request_changes(job_id);
         let job = contract.get_job(job_id).unwrap();
-        assert!(matches!(job.status, JobStatus::Submitted));
+        assert!(matches!(job.status, JobStatus::Open));
         
         // Coordinator's spent counter should be 0 (no payment released)
         let root_node = contract.get_node(root).unwrap();
         assert_eq!(root_node.spent, 0);
+        // Budget still committed
+        assert_eq!(root_node.committed_to_children, 70);
     }
 
     #[test]

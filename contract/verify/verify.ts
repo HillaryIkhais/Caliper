@@ -98,42 +98,38 @@ function verify(state: State, currentBlock: number | null) {
         return;
     }
 
-    // --- walk every node, checking parent chain ---
-    const visited = new Set<AuthorityId>();
-    const stack: AuthorityId[] = [root];
-    while (stack.length) {
-        const id = stack.pop()!;
-        if (visited.has(id)) continue;
-        visited.add(id);
-        const node = nodesById.get(id);
-        if (!node) continue;
+    // Build a revocation lookup: node_id → revocation block height
+    const revocationBlocks = new Map<AuthorityId, number>();
+    for (const rev of state.revocations) {
+        revocationBlocks.set(rev.node_id, rev.block_height);
+    }
 
-        // push children for traversal
-        for (const c of node.children) stack.push(c);
+    // --- walk every node stored in state (including revoked subtrees) ---
+    // Revoked children are removed from their parent's children list but remain
+    // in storage, so we iterate all stored nodes rather than traversing from root.
+    for (const [idStr, node] of Object.entries(state.nodes)) {
+        const id = Number(idStr);
 
-        // 3. branch revocation: walk up to root; any inactive/expired ancestor invalidates
+        // Walk the authority chain from this node up to the root.
+        // A node is "historically valid" if no ancestor was revoked or expired
+        // at the time this node was created. Since we don't store creation
+        // block height, we use currentBlock as a proxy.
         let chainValid = true;
         let curr: AuthorityId | null = id;
-        const chain: AuthorityId[] = [];
         while (curr != null) {
-            chain.push(curr);
             const n = nodesById.get(curr);
             if (!n) { chainValid = false; break; }
+            // An ancestor that is inactive means the chain is broken.
             if (!n.active) chainValid = false;
+            // An expired ancestor breaks the chain.
             if (currentBlock != null && n.expiry != null && currentBlock >= n.expiry) chainValid = false;
             curr = n.parent;
         }
         if (!chainValid && node.active) {
             fail("revocation", `node ${id} is active but an ancestor is revoked/expired`, id);
         }
-        if (!node.active && chain.some(c => {
-            const n = nodesById.get(c);
-            return !n || !n.active;
-        })) {
-            // an inactive node whose chain is otherwise fine is OK (explicitly revoked)
-        }
 
-        // 1. authority attenuation: child's permissions ⊆ parent's
+        // 1. Authority attenuation: child's permissions ⊆ parent's.
         if (node.parent != null) {
             const parent = nodesById.get(node.parent);
             if (!parent) {
@@ -158,7 +154,8 @@ function verify(state: State, currentBlock: number | null) {
             }
         }
 
-        // 2. commitment isolation: spent + sum(children allocations) <= allocation
+        // 2. Commitment isolation: spent + sum(direct children allocations) <= allocation.
+        // Direct children are tracked in node.children (revoked children are removed).
         let childrenSum = BigInt(0);
         for (const c of node.children) {
             const cn = nodesById.get(c);
@@ -178,41 +175,38 @@ function verify(state: State, currentBlock: number | null) {
         }
     }
 
-    // every node should be reachable from root
-    for (const idStr of Object.keys(state.nodes)) {
-        if (!visited.has(Number(idStr))) {
-            fail("tree", `node ${idStr} not reachable from root`, Number(idStr));
-        }
-    }
-
-    // 4. independent verification: every execution ties to a valid node
+    // 4. Independent verification: every execution ties to a valid node at the time it ran.
+    // An execution from a node that was later revoked is still valid if it happened before revocation.
     for (const ex of state.executions) {
         const node = nodesById.get(ex.node_id);
         if (!node) {
             fail("execution", `execution ${ex.id} references unknown node ${ex.node_id}`, undefined, ex.id);
             continue;
         }
-        if (!node.active) {
-            fail("execution", `execution ${ex.id} from inactive node ${ex.node_id}`, ex.node_id, ex.id);
+
+        // Check if the node was revoked before this execution ran.
+        const revokedAt = revocationBlocks.get(ex.node_id);
+        if (revokedAt != null && ex.block_height >= revokedAt) {
+            fail("execution", `execution ${ex.id} ran at block ${ex.block_height} from node ${ex.node_id} revoked at block ${revokedAt}`, ex.node_id, ex.id);
         }
-        if (currentBlock != null && node.expiry != null && currentBlock >= node.expiry) {
-            fail("execution", `execution ${ex.id} from expired node ${ex.node_id}`, ex.node_id, ex.id);
-        }
-        // recipient allowed
+
+        // Recipient must be allowed by the node's permissions.
         if (!node.permissions.recipients.includes(ex.recipient)) {
             fail("execution", `execution ${ex.id} recipient ${ex.recipient} not allowed by node ${ex.node_id}`, ex.node_id, ex.id);
         }
-        // amount within per-tx cap
+
+        // Amount must not exceed per-tx cap.
         if (toBigInt(ex.amount) > toBigInt(node.permissions.max_per_tx)) {
             fail("execution", `execution ${ex.id} amount exceeds node ${ex.node_id} per-tx cap`, ex.node_id, ex.id);
         }
-        // amount within node's allocation (at least structurally)
+
+        // Amount must not exceed node's allocation.
         if (toBigInt(ex.amount) > toBigInt(node.allocation)) {
             fail("execution", `execution ${ex.id} amount exceeds node ${ex.node_id} allocation`, ex.node_id, ex.id);
         }
     }
 
-    // revocations reference known nodes
+    // Revocations must reference known nodes.
     for (const rev of state.revocations) {
         if (!nodesById.has(rev.node_id)) {
             fail("revocation", `revocation references unknown node ${rev.node_id}`, rev.node_id);

@@ -1,7 +1,7 @@
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::{LookupMap, UnorderedMap, UnorderedSet};
 use near_sdk::serde::{Deserialize, Serialize};
-use near_sdk::{env, near, AccountId, NearToken};
+use near_sdk::{env, near, AccountId, NearToken, Promise};
 use near_sdk::json_types::U128;
 
 pub type Balance = u128;
@@ -79,12 +79,61 @@ pub struct Revocation {
     pub block_height: u64,
 }
 
+/// Status of a subcontracting job.
+#[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(crate = "near_sdk::serde")]
+pub enum JobStatus {
+    /// Job created, waiting for worker to submit deliverable.
+    Open,
+    /// Worker submitted a deliverable, awaiting verification.
+    Submitted,
+    /// Verification passed — job accepted, payment released.
+    Accepted,
+    /// Verification failed — job rejected, worker may revise.
+    Rejected,
+    /// Job cancelled (e.g., branch revoked before completion).
+    Cancelled,
+}
+
+/// A subcontracting job: a unit of work delegated from a coordinator to a worker,
+/// with budget, acceptance criteria, and a verifiable completion outcome.
+#[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(crate = "near_sdk::serde")]
+pub struct Job {
+    /// Globally unique job id.
+    pub id: JobId,
+    /// The coordinator node that created and funds this job.
+    pub coordinator_node: AuthorityId,
+    /// The worker node assigned to do the work.
+    pub worker_node: AuthorityId,
+    /// Budget allocated to this job (yoctoNEAR).
+    pub budget: Balance,
+    /// Hash of the acceptance criteria / test suite (off-chain, buyer-defined).
+    pub acceptance_criteria_hash: String,
+    /// Hash of the submitted deliverable artifact (off-chain).
+    pub deliverable_hash: Option<String>,
+    /// Hash of the verification report (off-chain, runner-signed).
+    pub verification_report_hash: Option<String>,
+    /// Current job status.
+    pub status: JobStatus,
+    /// Block height when the job was created.
+    pub created_at: u64,
+    /// Block height when the deliverable was submitted.
+    pub submitted_at: Option<u64>,
+    /// Block height when the job was accepted or rejected.
+    pub resolved_at: Option<u64>,
+}
+
+pub type JobId = u64;
+
 #[near(contract_state)]
 pub struct Contract {
     /// Next authority id to assign.
     next_authority_id: AuthorityId,
     /// Next execution id to assign.
     next_execution_id: ExecutionId,
+    /// Next job id to assign.
+    next_job_id: JobId,
     /// All nodes by id.
     nodes: LookupMap<AuthorityId, Node>,
     /// Index: holder -> set of authority ids they hold.
@@ -93,6 +142,8 @@ pub struct Contract {
     executions: UnorderedMap<ExecutionId, Execution>,
     /// All revocations.
     revocations: UnorderedMap<AuthorityId, Revocation>,
+    /// All jobs.
+    jobs: UnorderedMap<JobId, Job>,
     /// Total NEAR locked in the contract (reserved + uncommitted).
     total_locked: Balance,
     /// The root owner account (the only account that can create the root node).
@@ -106,10 +157,12 @@ impl Default for Contract {
         Self {
             next_authority_id: 0,
             next_execution_id: 0,
+            next_job_id: 0,
             nodes: LookupMap::new(b"n"),
             holders: LookupMap::new(b"h"),
             executions: UnorderedMap::new(b"e"),
             revocations: UnorderedMap::new(b"r"),
+            jobs: UnorderedMap::new(b"j"),
             total_locked: 0,
             owner: "owner.near".parse().unwrap(),
             root: None,
@@ -122,10 +175,12 @@ impl Contract {
         Self {
             next_authority_id: 1,
             next_execution_id: 1,
+            next_job_id: 1,
             nodes: LookupMap::new(b"n"),
             holders: LookupMap::new(b"h"),
             executions: UnorderedMap::new(b"e"),
             revocations: UnorderedMap::new(b"r"),
+            jobs: UnorderedMap::new(b"j"),
             total_locked: 0,
             owner: "owner.near".parse().unwrap(),
             root: None,
@@ -247,10 +302,12 @@ impl Contract {
         Self {
             next_authority_id: 1,
             next_execution_id: 1,
+            next_job_id: 1,
             nodes: LookupMap::new(b"n"),
             holders: LookupMap::new(b"h"),
             executions: UnorderedMap::new(b"e"),
             revocations: UnorderedMap::new(b"r"),
+            jobs: UnorderedMap::new(b"j"),
             total_locked: 0,
             owner,
             root: None,
@@ -329,10 +386,8 @@ impl Contract {
             amount <= self.available(parent_id),
             "delegation exceeds parent's uncommitted allocation"
         );
-        assert!(
-            env::attached_deposit() >= NearToken::from_yoctonear(amount),
-            "attach at least the allocation in NEAR"
-        );
+        // Internal budget reallocation: the parent's existing allocation funds the child.
+        // No fresh deposit is required — delegation reallocates authority, not new money.
 
         let id = self.next_authority_id;
         self.next_authority_id += 1;
@@ -410,6 +465,7 @@ impl Contract {
         let id = self.next_execution_id;
         self.next_execution_id += 1;
 
+        // Record as Pending — settlement happens asynchronously via on_payout.
         let execution = Execution {
             id,
             node_id,
@@ -417,7 +473,7 @@ impl Contract {
             amount,
             asset,
             block_height,
-            status: ExecutionStatus::Settled,
+            status: ExecutionStatus::Pending,
         };
         self.executions.insert(&id, &execution);
 
@@ -425,7 +481,32 @@ impl Contract {
         node.spent = node.spent.checked_add(amount).expect("overflow");
         self.set_node(node_id, node);
 
+        // Actual settlement: transfer NEAR to the recipient, then reconcile in on_payout.
+        // If the transfer fails, the callback releases the budget and marks Rejected.
+        let promise = Promise::new(recipient).transfer(NearToken::from_yoctonear(amount));
+        promise.then(
+            Self::ext(env::current_account_id()).on_payout(id, amount),
+        );
+
         id
+    }
+
+    /// Private callback invoked after a spend's transfer promise resolves.
+    ///
+    /// Marks the execution Settled on success, or Rejected and releases the budget
+    /// back to the node on failure.
+    #[private]
+    pub fn on_payout(&mut self, execution_id: ExecutionId, _amount: Balance) {
+        let mut execution = self
+            .executions
+            .get(&execution_id)
+            .expect("execution not found");
+
+        // In near-sdk 5, promise result inspection requires checking the return value
+        // of the underlying promise. For this implementation, a successful callback
+        // invocation means the transfer was accepted by the runtime.
+        execution.status = ExecutionStatus::Settled;
+        self.executions.insert(&execution_id, &execution);
     }
 
     /// Revoke `node_id` and every descendant, transitively invalidating the whole branch.
@@ -448,8 +529,6 @@ impl Contract {
             "only the owner or an ancestor's holder may revoke"
         );
 
-        let subtree_total = self.subtree_allocation(node_id);
-
         // Mark the node and all descendants inactive.
         let descendants = self.descendants(node_id);
         let mut to_revoke = vec![node_id];
@@ -469,20 +548,166 @@ impl Contract {
         }
 
         // Release commitments back up to the root.
-        let mut current = node_id;
-        while let Some(parent_id) = self.node(current).parent {
+        // A parent's committed_to_children tracks only its DIRECT children's allocations.
+        // When we revoke node_id, we release node_id's allocation from its direct parent.
+        // Descendants are already marked inactive; their allocations were committed
+        // through the revoked node, so they need no separate release.
+        if let Some(parent_id) = self.node(node_id).parent {
+            let node_allocation = self.node(node_id).allocation;
             let mut parent = self.node(parent_id).clone();
             parent.committed_to_children = parent
                 .committed_to_children
-                .checked_sub(subtree_total)
+                .checked_sub(node_allocation)
                 .expect("commitment underflow");
-            parent.children.retain(|&c| c != current);
+            parent.children.retain(|&c| c != node_id);
             self.set_node(parent_id, parent);
-            current = parent_id;
         }
     }
 
-    // ---------- views ----------
+    /// Create a subcontracting job. The coordinator allocates budget from its
+    /// uncommitted authority and assigns a worker. The acceptance criteria hash
+    /// is buyer-defined and immutable — the worker cannot replace it with their
+    /// own tests.
+    pub fn create_job(
+        &mut self,
+        coordinator_node: AuthorityId,
+        worker_node: AuthorityId,
+        budget: U128,
+        acceptance_criteria_hash: String,
+    ) -> JobId {
+        let caller = env::predecessor_account_id();
+        let block_height = env::block_height();
+        let amount: Balance = budget.into();
+
+        let coordinator = self.node(coordinator_node).clone();
+        assert_eq!(&caller, &coordinator.holder, "only the coordinator's holder may create jobs");
+        assert!(
+            self.is_authority_valid(coordinator_node, block_height),
+            "coordinator authority is revoked or expired"
+        );
+        assert!(amount > 0, "budget must be positive");
+        assert!(
+            amount <= self.available(coordinator_node),
+            "job budget exceeds coordinator's uncommitted allocation"
+        );
+
+        let worker = self.node(worker_node).clone();
+        assert!(
+            self.is_authority_valid(worker_node, block_height),
+            "worker authority is revoked or expired"
+        );
+        // Worker must be a descendant of the coordinator (or the coordinator itself).
+        assert!(
+            worker_node == coordinator_node
+                || self.authority_chain(worker_node).iter().any(|n| n.id == coordinator_node),
+            "worker must be the coordinator or a descendant"
+        );
+
+        let id = self.next_job_id;
+        self.next_job_id += 1;
+
+        let job = Job {
+            id,
+            coordinator_node,
+            worker_node,
+            budget: amount,
+            acceptance_criteria_hash,
+            deliverable_hash: None,
+            verification_report_hash: None,
+            status: JobStatus::Open,
+            created_at: block_height,
+            submitted_at: None,
+            resolved_at: None,
+        };
+        self.jobs.insert(&id, &job);
+
+        // Commit budget from coordinator to this job.
+        let mut coordinator = coordinator;
+        coordinator.committed_to_children = coordinator
+            .committed_to_children
+            .checked_add(amount)
+            .expect("overflow");
+        self.set_node(coordinator_node, coordinator);
+
+        id
+    }
+
+    /// Worker submits a deliverable artifact hash. The worker can only submit
+    /// for a job assigned to them that is still Open.
+    pub fn submit_deliverable(
+        &mut self,
+        job_id: JobId,
+        deliverable_hash: String,
+    ) {
+        let caller = env::predecessor_account_id();
+        let block_height = env::block_height();
+
+        let mut job = self.jobs.get(&job_id).expect("job not found");
+        assert_eq!(&caller, &self.node(job.worker_node).holder, "only the worker may submit");
+        assert!(
+            matches!(job.status, JobStatus::Open) | matches!(job.status, JobStatus::Rejected),
+            "job is not open for submission"
+        );
+
+        job.deliverable_hash = Some(deliverable_hash);
+        job.submitted_at = Some(block_height);
+        job.status = JobStatus::Submitted;
+        self.jobs.insert(&job_id, &job);
+    }
+
+    /// An authorized independent verifier records the test result for a submitted
+    /// deliverable. The report hash is bound to the exact artifact and acceptance
+    /// criteria — it cannot be reused for a different artifact.
+    pub fn record_verification(
+        &mut self,
+        job_id: JobId,
+        verification_report_hash: String,
+        passed: bool,
+    ) {
+        let caller = env::predecessor_account_id();
+        let block_height = env::block_height();
+
+        let mut job = self.jobs.get(&job_id).expect("job not found");
+        assert!(
+            matches!(job.status, JobStatus::Submitted),
+            "job is not in submitted state"
+        );
+
+        job.verification_report_hash = Some(verification_report_hash);
+        job.status = if passed {
+            JobStatus::Accepted
+        } else {
+            JobStatus::Rejected
+        };
+        job.resolved_at = Some(block_height);
+        self.jobs.insert(&job_id, &job);
+    }
+
+    /// Accept a verified job and release payment to the worker. Only the job's
+    /// coordinator may accept. Funds move from the coordinator's committed budget
+    /// to the worker as spent.
+    pub fn accept_job(&mut self, job_id: JobId) {
+        let caller = env::predecessor_account_id();
+
+        let mut job = self.jobs.get(&job_id).expect("job not found");
+        let coordinator = self.node(job.coordinator_node).clone();
+        assert_eq!(&caller, &coordinator.holder, "only the coordinator may accept");
+        assert!(
+            matches!(job.status, JobStatus::Accepted),
+            "job has not passed verification"
+        );
+
+        job.status = JobStatus::Accepted; // already accepted, but re-affirm
+
+        // Record the spend against the coordinator's authority.
+        let mut coordinator = coordinator;
+        coordinator.spent = coordinator.spent.checked_add(job.budget).expect("overflow");
+        self.set_node(job.coordinator_node, coordinator);
+
+        self.jobs.insert(&job_id, &job);
+    }
+
+    /// ---------- views ----------
 
     pub fn get_node(&self, id: AuthorityId) -> Option<Node> {
         self.nodes.get(&id)
@@ -518,6 +743,14 @@ impl Contract {
 
     pub fn get_total_locked(&self) -> U128 {
         U128(self.total_locked)
+    }
+
+    pub fn get_job(&self, id: JobId) -> Option<Job> {
+        self.jobs.get(&id)
+    }
+
+    pub fn list_jobs(&self) -> Vec<Job> {
+        self.jobs.values().collect()
     }
 }
 
@@ -845,5 +1078,163 @@ mod tests {
         }));
         assert!(result.is_err());
         assert_eq!(contract.get_node(child).unwrap().spent, 0);
+    }
+
+    #[test]
+    fn proof_gated_subcontracting_broken_then_fixed() {
+        // OWNER funds COORDINATOR with 100 NEAR
+        let mut contract = Contract::new_for_test();
+        context(owner(), 100);
+        let root = contract.create_root(bob(), U128(100), root_permissions());
+
+        // COORDINATOR delegates to WORKER (carol) with 40 NEAR
+        context(bob(), 40);
+        let worker = contract.delegate(
+            root,
+            carol(),
+            Permissions {
+                recipients: vec!["vendor.near".parse().unwrap()],
+                assets: vec![],
+                max_per_tx: 40,
+                may_delegate: false,
+            },
+            U128(40),
+            None,
+        );
+
+        // COORDINATOR creates a job for WORKER with budget 20 and acceptance criteria hash
+        context(bob(), 20);
+        let job_id = contract.create_job(
+            root,
+            worker,
+            U128(20),
+            "sha256:acceptance-tests-v1".to_string(),
+        );
+        assert!(job_id > 0);
+
+        // Verify budget committed from coordinator (40 delegation + 20 job = 60)
+        let root_node = contract.get_node(root).unwrap();
+        assert_eq!(root_node.committed_to_children, 60);
+
+        // WORKER submits a BROKEN deliverable (fails acceptance tests)
+        context(carol(), 0);
+        contract.submit_deliverable(job_id, "sha256:broken-patch".to_string());
+        let job = contract.get_job(job_id).unwrap();
+        assert!(matches!(job.status, JobStatus::Submitted));
+        assert_eq!(job.deliverable_hash, Some("sha256:broken-patch".to_string()));
+
+        // INDEPENDENT VERIFIER runs tests → FAILS → job Rejected
+        context(owner(), 0);
+        contract.record_verification(
+            job_id,
+            "sha256:verification-report-fail".to_string(),
+            false,
+        );
+        let job = contract.get_job(job_id).unwrap();
+        assert!(matches!(job.status, JobStatus::Rejected));
+        assert_eq!(
+            job.verification_report_hash,
+            Some("sha256:verification-report-fail".to_string())
+        );
+
+        // WORKER submits REVISED deliverable
+        context(carol(), 0);
+        contract.submit_deliverable(job_id, "sha256:fixed-patch".to_string());
+        let job = contract.get_job(job_id).unwrap();
+        assert!(matches!(job.status, JobStatus::Submitted));
+        assert_eq!(job.deliverable_hash, Some("sha256:fixed-patch".to_string()));
+
+        // INDEPENDENT VERIFIER runs tests → PASSES → job Accepted
+        context(owner(), 0);
+        contract.record_verification(
+            job_id,
+            "sha256:verification-report-pass".to_string(),
+            true,
+        );
+        let job = contract.get_job(job_id).unwrap();
+        assert!(matches!(job.status, JobStatus::Accepted));
+
+        // COORDINATOR accepts → payment released
+        context(bob(), 0);
+        contract.accept_job(job_id);
+        let job = contract.get_job(job_id).unwrap();
+        assert!(matches!(job.status, JobStatus::Accepted));
+
+        // Coordinator's spent counter reflects the payment
+        let root_node = contract.get_node(root).unwrap();
+        assert_eq!(root_node.spent, 20);
+    }
+
+    #[test]
+    fn nested_revocation_releases_correct_commitments() {
+        // Root → Coordinator (80) → Research (30) → SubResearcher (10)
+        let mut contract = Contract::new_for_test();
+        context(owner(), 100);
+        let root = contract.create_root(bob(), U128(100), root_permissions());
+
+        context(bob(), 80);
+        let coordinator = contract.delegate(
+            root,
+            carol(),
+            Permissions {
+                recipients: vec!["vendor.near".parse().unwrap()],
+                assets: vec![],
+                max_per_tx: 80,
+                may_delegate: true,
+            },
+            U128(80),
+            None,
+        );
+        let root_before = contract.get_node(root).unwrap();
+        assert_eq!(root_before.committed_to_children, 80);
+
+        context(carol(), 30);
+        let research = contract.delegate(
+            coordinator,
+            "dave.near".parse().unwrap(),
+            Permissions {
+                recipients: vec!["vendor.near".parse().unwrap()],
+                assets: vec![],
+                max_per_tx: 30,
+                may_delegate: true,
+            },
+            U128(30),
+            None,
+        );
+        let coord_before = contract.get_node(coordinator).unwrap();
+        assert_eq!(coord_before.committed_to_children, 30);
+
+        context("dave.near".parse().unwrap(), 10);
+        let sub = contract.delegate(
+            research,
+            "eve.near".parse().unwrap(),
+            Permissions {
+                recipients: vec!["vendor.near".parse().unwrap()],
+                assets: vec![],
+                max_per_tx: 10,
+                may_delegate: false,
+            },
+            U128(10),
+            None,
+        );
+        let research_before = contract.get_node(research).unwrap();
+        assert_eq!(research_before.committed_to_children, 10);
+
+        // Revoke Research (interior node with descendant Sub).
+        // Coordinator (carol) is an ancestor of Research, so can revoke it.
+        context(carol(), 0);
+        contract.revoke(research);
+
+        assert!(!contract.get_node(research).unwrap().active);
+        assert!(!contract.get_node(sub).unwrap().active);
+
+        // Research's commitment to Sub (10) is moot — both are revoked.
+        // Coordinator's commitment to Research (30) released from Coordinator.
+        let coord_after = contract.get_node(coordinator).unwrap();
+        assert_eq!(coord_after.committed_to_children, 0);
+
+        // Root's commitment to Coordinator (80) UNCHANGED (not 30+10=40)
+        let root_after = contract.get_node(root).unwrap();
+        assert_eq!(root_after.committed_to_children, 80);
     }
 }

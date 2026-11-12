@@ -67,7 +67,9 @@ The corrected patch passes the pinned suite and independent negative tests. CALI
 
 ## The receipt
 
-Every accepted job produces a verifiable receipt binding: market job ID, worker ID, accepted price, base commit hash, submitted artifact hash, buyer-owned test-suite hash, runner image/version hash, test result, report hash, and acceptance/payment reference. A previous passing receipt cannot be reused for a different artifact.
+Every accepted job produces a verifiable receipt binding: market job ID, worker ID, verifier node ID, accepted price, base commit hash, submitted artifact hash, buyer-owned test-suite hash, runner image/version hash, test result, report hash, and acceptance/payment reference. A previous passing receipt cannot be reused for a different artifact.
+
+**Important security property**: The contract **enforces** that only the pre-designated verifier (stored in `verifier_node` at job creation) may record verification results. An arbitrary account cannot claim a passing test without being the authorized runner. Combined with Promise-based payment on `accept_job`, this ensures payment only flows after independent verification by the designated party.
 
 ## Competitive position
 

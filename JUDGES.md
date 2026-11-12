@@ -62,14 +62,14 @@ The 13 unit tests in `contract/src/lib.rs`:
 
 ## What the verifier proves
 
-`verify/verify.ts` reconstructs the authority tree and job lifecycle from exported contract state and checks all four CALIPER guarantees:
+`verify/verify.ts` reconstructs the authority tree and job lifecycle from exported contract state and checks all CALIPER guarantees:
 
 1. **Authority attenuation** — child's permissions ⊆ parent's.
-2. **Commitment isolation** — spent + children allocations ≤ allocation.
+2. **Commitment isolation** — spent + children allocations ≤ allocation. Node `created_at` timestamps enable ordering verification.
 3. **Branch revocation** — revoking a node invalidates every descendant; execution chronology checked against revocation block heights.
-4. **Independent verification** — every execution, submission, verification and acceptance ties to a valid, authorized node at the time it occurred.
+4. **Independent verification** — every execution ties to a valid, authorized node; jobs require `tampering_detected == false` and `independent_passed == true` for acceptance.
 
-It exits 0 on a valid tree and non-zero on any violation, naming the exact rule and node.
+It exits 0 on a valid tree and non-zero on any violation, naming the exact rule and node/job.
 
 ## The contract
 

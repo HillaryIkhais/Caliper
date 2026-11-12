@@ -4,7 +4,7 @@
 
 AI agents can hire other AI agents. But who controls the money and authority when those agents start hiring their own subcontractors — and who verifies that the hired agent actually fixed the problem, instead of just fixing the measurement of its own performance?
 
-CALIPER is an on-chain authority and settlement system for autonomous subcontracting with **independent acceptance**. It lets agents hire other agents, delegate budget recursively, and — crucially — prevents an agent from accepting and paying for work that has not passed independent verification.
+CALIPER is an on-chain authority and settlement system for autonomous subcontracting with **independent acceptance**. It lets agents delegate budget recursively with strictly enforced least-privilege, and — crucially — prevents acceptance and payment of work that has not passed independent verification.
 
 ## The failure CALIPER prevents
 
@@ -14,48 +14,6 @@ The agent has not fixed the software. It has **fixed the measurement of its own 
 
 This is a documented risk. OWASP's Secure Coding with AI guidance identifies test deletion, weakened assertions, and disabled checks as agent-coding risks. OpenAI has documented reward-hacking behavior in which coding agents edit tests or disable checks to make evaluations pass.
 
-## The product loop
-
-KEEP THE FIRST VERSION NARROW: software bug fixes, because they have tests that objectively pass or fail.
-
-1. **Owner submits a task.** Example: "Fix this authorization bug in a NEAR contract." Supplies the repository, base commit, budget, acceptance tests, and a list of protected files (tests, CI config, build scripts) that the worker must not modify.
-2. **Coordinator hires a worker.** CALIPER creates the job through NEAR Agent Market with a fixed budget, an immutable acceptance-suite hash, and the protected file list pinned before work begins. The worker cannot substitute its own tests.
-3. **Worker submits a deliverable.** The worker reports which files they modified. CALIPER checks whether any modified file is in the protected list. If so, **tampering is flagged** and the job cannot be accepted.
-4. **Independent runner tests it.** A separate, isolated runner executes the buyer's original pinned tests against the worker's exact code artifact.
-5. **Failure triggers repair.** CALIPER records the failure evidence and permits one bounded correction. Added tests can supplement, but cannot replace, the buyer's tests.
-6. **Pass triggers acceptance.** CALIPER records a receipt tied to the exact source revision, test suite, and runner. The job can now be accepted and the NEAR Agent Market escrow released.
-7. **Unresolved failure gets a human gate.** No LLM casually declares ambiguous work successful.
-
-## The demo that sells it
-
-**One vulnerable repository. One authorization bug. One worker who tries to fake it.**
-
-01 — The subcontract
-
-Owner gives the coordinator a 1 NEAR budget and a repository with a failing authorization test. The coordinator hires a coding agent through NEAR Agent Market. The acceptance suite and base commit are pinned before work begins.
-
-02 — The attack
-
-The worker cannot fix the bug, so it weakens the failing assertion and disables a test. Its own CI reports green.
-
-```
-Worker's own CI:        PASS
-CALIPER independent run: FAIL
-Unauthorized withdrawal still succeeds — the original regression test catches it.
-```
-
-CALIPER detects changes to protected test files. It then runs the original buyer-owned suite against the worker's exact artifact — and the bug is still there.
-
-03 — Repair
-
-CALIPER sends the failure evidence back. The worker gets one bounded correction opportunity.
-
-04 — Acceptance
-
-The corrected patch passes the pinned suite and independent negative tests. CALIPER produces a receipt tied to the exact source revision, test suite, and runner version. The job is accepted and the marketplace escrow is released.
-
-**Hire → attack → detect → return → repair → independently verify → accept → pay → prove.**
-
 ## What CALIPER enforces
 
 | Guarantee | Meaning |
@@ -63,46 +21,71 @@ The corrected patch passes the pinned suite and independent negative tests. CALI
 | **Authority attenuation** | A child cannot acquire permissions, recipients, assets or spending limits its parent does not possess. |
 | **Commitment isolation** | A parent cannot spend funds already committed to its children. A child cannot spend or delegate beyond its uncommitted allocation. |
 | **Branch revocation** | Revoking a parent invalidates every descendant. Unrelated branches survive. |
-| **Independent acceptance** | A job cannot be accepted unless an independent verifier has passed it, and no protected files were tampered with. |
+| **Independent acceptance** | A job cannot be accepted unless independent_passed=true AND tampering_detected=false. |
 
-## The receipt
+## The signature product moment
 
-Every accepted job produces a verifiable receipt binding: market job ID, worker ID, verifier node ID, accepted price, base commit hash, submitted artifact hash, buyer-owned test-suite hash, runner image/version hash, test result, report hash, and acceptance/payment reference. A previous passing receipt cannot be reused for a different artifact.
+```
+OWNER creates root authority: 1.0 NEAR
+  ↓ delegate 0.60 NEAR, research permissions
+  ↓ delegate 0.20 NEAR, verifier permissions  
+  ↓ coordinator tries to spend 0.80 NEAR → REJECTED
 
-**Important security property**: The contract **enforces** that only the pre-designated verifier (stored in `verifier_node` at job creation) may record verification results. An arbitrary account cannot claim a passing test without being the authorized runner. Combined with Promise-based payment on `accept_job`, this ensures payment only flows after independent verification by the designated party.
+Coordinator has only 0.20 NEAR uncommitted. The 0.60 and 0.20 are already reserved as commitments.
+```
 
-## Competitive position
+This is commitment isolation in action — financial commitments cannot be reused.
 
-| Project | What it demonstrates | CALIPER's opening |
-|---|---|---|
-| AgentProof | Deterministic checks against structured deliverables; on-chain evidence | Its checker is not an independent software test runner, and failed checks do not block or refund payment (marketplace integration is read-only). |
-| Digi Swarm Treasury | Workers bid, deliver, split revenue under treasury rules | Records deliverable hashes, but a hash does not establish that the software works. |
-| Veto / Banbo | Payment safety, provenance, protection against malicious instructions | Not focused on whether hired code actually satisfies the buyer's requirements. |
-| **CALIPER** | **Independent acceptance of agent-written code; tampering detection** | **Worker cannot manipulate the evaluator or certify its own work.** |
+## Commitment isolation details
 
-## Make the NEAR integration real
+When a job is created, the job's budget is moved from `committed_to_children` (which tracks commitments reserved for children) to the parent's available balance. When the job is accepted, the budget moves to `spent`. This ensures proper accounting:
 
-CALIPER does not invent another marketplace or escrow. It uses NEAR Agent Market's existing financial rails:
+1. **Job creation**: Budget reserved in `committed_to_children`
+2. **Job acceptance**: Budget moves from `committed_to_children` → `spent`, transferred to worker via Promise
+3. **Job failure**: Budget remains in `committed_to_children` until corrective work is submitted
 
-- `client.jobs.create()` to create a job
-- `client.jobs.requestChanges()` to return unsatisfactory work
-- `client.jobs.accept()` to accept the deliverable and release its escrow
+## The contract
 
-The new work CALIPER adds is the **missing independent acceptance gate**: tampering detection, protected file enforcement, and independent verification that blocks payment until the buyer's original tests pass against the exact submitted artifact.
+The NEAR contract implements:
 
-## Honesty constraint
+- `init(owner)` — Initialize with root owner
+- `create_root(holder, allocation, permissions)` — Create root authority node
+- `delegate(parent, holder, permissions, allocation, expiry)` — Create attenuated child
+- `spend(node, recipient, amount, asset)` — Execute a spend with Promise-based settlement
+- `revoke(node)` — Transitively invalidate a branch
+- `create_job(coordinator, worker, verifier, budget, acceptance_hash, protected_files)` — Create subcontracting job
+- `submit_deliverable(job, hash, modified_files)` — Worker submits work
+- `record_independent_verification(job, report_hash, passed)` — Authenticated verifier records result
+- `accept_job(job)` — Coordinator accepts with Promise-based payment
 
-The NEAR contract verifies a signed report from an authorized test runner, bound to the exact artifact and test suite. The runner is a trust assumption — make the test environment reproducible and let judges rerun it; do not call the result trustless proof. CALIPER proves that this exact artifact passed this exact acceptance suite in this exact environment — not that the entire software system is bug-free.
+View methods: `get_node`, `get_root`, `get_owner`, `get_available`, `is_valid`, `get_execution`, `list_executions`, `list_revocations`, `get_job`, `list_jobs`, `get_total_locked`.
+
+## Independent verifier (off-chain)
+
+`contract/verify/verify.ts` reconstructs exported contract state and verifies:
+
+1. **Authority attenuation** — child permissions ⊆ parent permissions
+2. **Commitment isolation** — spent + sum(children allocations) ≤ allocation  
+3. **Branch revocation** — revoked nodes and descendants are inactive
+4. **Node ordering** — `created_at` timestamps enforce proper causality
+
+```bash
+# Run the verifier
+npx tsx verify/verify.ts verify/sample-valid.json       # VERIFIED (exit 0)
+npx tsx verify/verify.ts verify/sample-invalid-attenuation.json  # FAILED (exit 1)
+npx tsx verify/verify.ts verify/sample-invalid-commitment.json   # FAILED (exit 1)
+```
 
 ## Repo contents
 
-- `contract/src/lib.rs` — NEAR smart contract: authority tree (`create_root`, `delegate`, `spend`, `revoke`) + job lifecycle (`create_job` with protected files, `submit_deliverable` with tampering detection, `record_independent_verification`, `accept_job`) + Promise-based settlement.
-- `contract/verify/verify.ts` — independent TypeScript verifier reconstructing the authority tree and job lifecycle from exported contract state.
-- 13 unit tests: proof-gated subcontracting (tampering detected, clean acceptance, independent verification failure), nested revocation accounting, commitment isolation, authority attenuation.
+- `contract/src/lib.rs` — NEAR WASM contract (~286 KB)
+- `contract/verify/verify.ts` — TypeScript verifier
+- 13 unit tests proving all guarantees
+- Valid and invalid fixtures for verification
 
-## Judge path (frictionless)
+## Judge path (offline, no network required)
 
-See `JUDGES.md`. From a clean checkout:
+From a clean checkout:
 
 ```bash
 cd contract
@@ -113,4 +96,4 @@ npx tsx verify/verify.ts verify/sample-valid.json       # VERIFIED (exit 0)
 
 ## Deadline
 
-November 14 at 23:59 UTC. This repository is self-contained: `cargo test` and the verifier run offline and reproduce every claim in the README.
+November 14 at 23:59 UTC. This repository is self-contained and reproducible from source.

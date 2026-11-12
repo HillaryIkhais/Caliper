@@ -110,10 +110,19 @@ pub struct Job {
     pub budget: Balance,
     /// Hash of the acceptance criteria / test suite (off-chain, buyer-defined).
     pub acceptance_criteria_hash: String,
+    /// File paths that the worker must not modify (tests, CI config, build scripts).
+    /// The buyer pins these before hiring; the worker cannot substitute its own tests.
+    pub protected_files: Vec<String>,
     /// Hash of the submitted deliverable artifact (off-chain).
     pub deliverable_hash: Option<String>,
-    /// Hash of the verification report (off-chain, runner-signed).
-    pub verification_report_hash: Option<String>,
+    /// File paths the worker actually modified (submitted with the deliverable).
+    pub modified_files: Option<Vec<String>>,
+    /// Whether the worker modified any protected file (tampering detected).
+    pub tampering_detected: bool,
+    /// Hash of the independent verification report (off-chain, runner-signed).
+    pub independent_report_hash: Option<String>,
+    /// Result of the independent verification run.
+    pub independent_passed: Option<bool>,
     /// Current job status.
     pub status: JobStatus,
     /// Block height when the job was created.
@@ -566,14 +575,17 @@ impl Contract {
 
     /// Create a subcontracting job. The coordinator allocates budget from its
     /// uncommitted authority and assigns a worker. The acceptance criteria hash
-    /// is buyer-defined and immutable — the worker cannot replace it with their
-    /// own tests.
+    /// Create a subcontracting job. The coordinator allocates budget from its
+    /// uncommitted authority and assigns a worker. The acceptance criteria hash
+    /// and protected file list are buyer-defined and immutable — the worker
+    /// cannot replace the acceptance suite with their own tests.
     pub fn create_job(
         &mut self,
         coordinator_node: AuthorityId,
         worker_node: AuthorityId,
         budget: U128,
         acceptance_criteria_hash: String,
+        protected_files: Vec<String>,
     ) -> JobId {
         let caller = env::predecessor_account_id();
         let block_height = env::block_height();
@@ -612,8 +624,12 @@ impl Contract {
             worker_node,
             budget: amount,
             acceptance_criteria_hash,
+            protected_files,
             deliverable_hash: None,
-            verification_report_hash: None,
+            modified_files: None,
+            tampering_detected: false,
+            independent_report_hash: None,
+            independent_passed: None,
             status: JobStatus::Open,
             created_at: block_height,
             submitted_at: None,
@@ -632,12 +648,16 @@ impl Contract {
         id
     }
 
-    /// Worker submits a deliverable artifact hash. The worker can only submit
-    /// for a job assigned to them that is still Open.
+    /// Worker submits a deliverable artifact hash along with the list of files
+    /// they modified. The contract checks whether any modified file is in the
+    /// job's protected file list (tests, CI config, build scripts). If so,
+    /// tampering is flagged and the job cannot be accepted until the worker
+    /// restores the protected files.
     pub fn submit_deliverable(
         &mut self,
         job_id: JobId,
         deliverable_hash: String,
+        modified_files: Vec<String>,
     ) {
         let caller = env::predecessor_account_id();
         let block_height = env::block_height();
@@ -649,7 +669,18 @@ impl Contract {
             "job is not open for submission"
         );
 
+        // Tampering detection: any protected file modified by the worker is flagged.
+        let mut tampering_detected = false;
+        for f in &modified_files {
+            if job.protected_files.contains(f) {
+                tampering_detected = true;
+                break;
+            }
+        }
+
         job.deliverable_hash = Some(deliverable_hash);
+        job.modified_files = Some(modified_files);
+        job.tampering_detected = tampering_detected;
         job.submitted_at = Some(block_height);
         job.status = JobStatus::Submitted;
         self.jobs.insert(&job_id, &job);
@@ -657,11 +688,12 @@ impl Contract {
 
     /// An authorized independent verifier records the test result for a submitted
     /// deliverable. The report hash is bound to the exact artifact and acceptance
-    /// criteria — it cannot be reused for a different artifact.
-    pub fn record_verification(
+    /// criteria — it cannot be reused for a different artifact. Only callable by
+    /// the verifier account (not the worker).
+    pub fn record_independent_verification(
         &mut self,
         job_id: JobId,
-        verification_report_hash: String,
+        independent_report_hash: String,
         passed: bool,
     ) {
         let caller = env::predecessor_account_id();
@@ -673,19 +705,17 @@ impl Contract {
             "job is not in submitted state"
         );
 
-        job.verification_report_hash = Some(verification_report_hash);
-        job.status = if passed {
-            JobStatus::Accepted
-        } else {
-            JobStatus::Rejected
-        };
+        job.independent_report_hash = Some(independent_report_hash);
+        job.independent_passed = Some(passed);
         job.resolved_at = Some(block_height);
         self.jobs.insert(&job_id, &job);
     }
 
     /// Accept a verified job and release payment to the worker. Only the job's
-    /// coordinator may accept. Funds move from the coordinator's committed budget
-    /// to the worker as spent.
+    /// coordinator may accept. Acceptance requires:
+    /// 1. The job has passed independent verification (independent_passed == true).
+    /// 2. No tampering was detected (tampering_detected == false).
+    /// Funds move from the coordinator's committed budget to the worker as spent.
     pub fn accept_job(&mut self, job_id: JobId) {
         let caller = env::predecessor_account_id();
 
@@ -693,17 +723,24 @@ impl Contract {
         let coordinator = self.node(job.coordinator_node).clone();
         assert_eq!(&caller, &coordinator.holder, "only the coordinator may accept");
         assert!(
-            matches!(job.status, JobStatus::Accepted),
-            "job has not passed verification"
+            matches!(job.status, JobStatus::Submitted),
+            "job has not been submitted for verification"
         );
-
-        job.status = JobStatus::Accepted; // already accepted, but re-affirm
+        assert!(
+            job.independent_passed == Some(true),
+            "job has not passed independent verification"
+        );
+        assert!(
+            !job.tampering_detected,
+            "tampering detected: worker modified protected files"
+        );
 
         // Record the spend against the coordinator's authority.
         let mut coordinator = coordinator;
         coordinator.spent = coordinator.spent.checked_add(job.budget).expect("overflow");
         self.set_node(job.coordinator_node, coordinator);
 
+        job.status = JobStatus::Accepted;
         self.jobs.insert(&job_id, &job);
     }
 
@@ -1081,7 +1118,7 @@ mod tests {
     }
 
     #[test]
-    fn proof_gated_subcontracting_broken_then_fixed() {
+    fn proof_gated_subcontracting_tampering_detected() {
         // OWNER funds COORDINATOR with 100 NEAR
         let mut contract = Contract::new_for_test();
         context(owner(), 100);
@@ -1102,13 +1139,91 @@ mod tests {
             None,
         );
 
-        // COORDINATOR creates a job for WORKER with budget 20 and acceptance criteria hash
+        // COORDINATOR creates a job for WORKER with budget 20, acceptance criteria,
+        // and protected files (the buyer's tests and CI config that the worker must not touch)
         context(bob(), 20);
         let job_id = contract.create_job(
             root,
             worker,
             U128(20),
             "sha256:acceptance-tests-v1".to_string(),
+            vec![
+                "tests/auth_test.rs".to_string(),
+                ".github/workflows/ci.yml".to_string(),
+            ],
+        );
+        assert!(job_id > 0);
+
+        // WORKER submits a deliverable that modifies protected test files (tampering)
+        // to make the failing test pass artificially.
+        context(carol(), 0);
+        contract.submit_deliverable(
+            job_id,
+            "sha256:tampered-patch".to_string(),
+            vec!["src/lib.rs".to_string(), "tests/auth_test.rs".to_string()],
+        );
+        let job = contract.get_job(job_id).unwrap();
+        assert!(matches!(job.status, JobStatus::Submitted));
+        assert!(job.tampering_detected);
+        assert_eq!(
+            job.modified_files,
+            Some(vec!["src/lib.rs".to_string(), "tests/auth_test.rs".to_string()])
+        );
+
+        // Even if an independent verifier ran tests and they passed,
+        // tampering must block acceptance.
+        context(owner(), 0);
+        contract.record_independent_verification(
+            job_id,
+            "sha256:verification-report-pass".to_string(),
+            true,
+        );
+        let job = contract.get_job(job_id).unwrap();
+        assert!(matches!(job.status, JobStatus::Submitted));
+        assert_eq!(job.independent_passed, Some(true));
+        assert!(job.tampering_detected);
+
+        // COORDINATOR tries to accept → REJECTED because tampering was detected
+        context(bob(), 0);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            contract.accept_job(job_id)
+        }));
+        assert!(result.is_err());
+        // Job must still be in Submitted state, not Accepted
+        let job = contract.get_job(job_id).unwrap();
+        assert!(matches!(job.status, JobStatus::Submitted));
+    }
+
+    #[test]
+    fn proof_gated_subcontracting_clean_then_accepted() {
+        // OWNER funds COORDINATOR with 100 NEAR
+        let mut contract = Contract::new_for_test();
+        context(owner(), 100);
+        let root = contract.create_root(bob(), U128(100), root_permissions());
+
+        // COORDINATOR delegates to WORKER (carol) with 40 NEAR
+        context(bob(), 40);
+        let worker = contract.delegate(
+            root,
+            carol(),
+            Permissions {
+                recipients: vec!["vendor.near".parse().unwrap()],
+                assets: vec![],
+                max_per_tx: 40,
+                may_delegate: false,
+            },
+            U128(40),
+            None,
+        );
+
+        // COORDINATOR creates a job for WORKER with budget 20
+        context(bob(), 20);
+        let job_id = contract.create_job(
+            root,
+            worker,
+            U128(20),
+            "sha256:acceptance-tests-v1".to_string(),
+            vec!["tests/auth_test.rs".to_string()],
         );
         assert!(job_id > 0);
 
@@ -1116,43 +1231,26 @@ mod tests {
         let root_node = contract.get_node(root).unwrap();
         assert_eq!(root_node.committed_to_children, 60);
 
-        // WORKER submits a BROKEN deliverable (fails acceptance tests)
+        // WORKER submits a CLEAN deliverable (only source files, no protected files)
         context(carol(), 0);
-        contract.submit_deliverable(job_id, "sha256:broken-patch".to_string());
-        let job = contract.get_job(job_id).unwrap();
-        assert!(matches!(job.status, JobStatus::Submitted));
-        assert_eq!(job.deliverable_hash, Some("sha256:broken-patch".to_string()));
-
-        // INDEPENDENT VERIFIER runs tests → FAILS → job Rejected
-        context(owner(), 0);
-        contract.record_verification(
+        contract.submit_deliverable(
             job_id,
-            "sha256:verification-report-fail".to_string(),
-            false,
+            "sha256:fixed-patch".to_string(),
+            vec!["src/lib.rs".to_string()],
         );
-        let job = contract.get_job(job_id).unwrap();
-        assert!(matches!(job.status, JobStatus::Rejected));
-        assert_eq!(
-            job.verification_report_hash,
-            Some("sha256:verification-report-fail".to_string())
-        );
-
-        // WORKER submits REVISED deliverable
-        context(carol(), 0);
-        contract.submit_deliverable(job_id, "sha256:fixed-patch".to_string());
         let job = contract.get_job(job_id).unwrap();
         assert!(matches!(job.status, JobStatus::Submitted));
-        assert_eq!(job.deliverable_hash, Some("sha256:fixed-patch".to_string()));
+        assert!(!job.tampering_detected);
 
-        // INDEPENDENT VERIFIER runs tests → PASSES → job Accepted
+        // INDEPENDENT VERIFIER runs tests → PASSES
         context(owner(), 0);
-        contract.record_verification(
+        contract.record_independent_verification(
             job_id,
             "sha256:verification-report-pass".to_string(),
             true,
         );
         let job = contract.get_job(job_id).unwrap();
-        assert!(matches!(job.status, JobStatus::Accepted));
+        assert_eq!(job.independent_passed, Some(true));
 
         // COORDINATOR accepts → payment released
         context(bob(), 0);
@@ -1163,6 +1261,63 @@ mod tests {
         // Coordinator's spent counter reflects the payment
         let root_node = contract.get_node(root).unwrap();
         assert_eq!(root_node.spent, 20);
+    }
+
+    #[test]
+    fn proof_gated_subcontracting_independent_verification_fails() {
+        let mut contract = Contract::new_for_test();
+        context(owner(), 100);
+        let root = contract.create_root(bob(), U128(100), root_permissions());
+
+        context(bob(), 40);
+        let worker = contract.delegate(
+            root,
+            carol(),
+            Permissions {
+                recipients: vec!["vendor.near".parse().unwrap()],
+                assets: vec![],
+                max_per_tx: 40,
+                may_delegate: false,
+            },
+            U128(40),
+            None,
+        );
+
+        context(bob(), 20);
+        let job_id = contract.create_job(
+            root,
+            worker,
+            U128(20),
+            "sha256:acceptance-tests-v1".to_string(),
+            vec!["tests/auth_test.rs".to_string()],
+        );
+
+        // WORKER submits deliverable
+        context(carol(), 0);
+        contract.submit_deliverable(
+            job_id,
+            "sha256:broken-patch".to_string(),
+            vec!["src/lib.rs".to_string()],
+        );
+
+        // INDEPENDENT VERIFIER runs tests → FAILS (bug still exists)
+        context(owner(), 0);
+        contract.record_independent_verification(
+            job_id,
+            "sha256:verification-report-fail".to_string(),
+            false,
+        );
+        let job = contract.get_job(job_id).unwrap();
+        assert_eq!(job.independent_passed, Some(false));
+
+        // COORDINATOR tries to accept → REJECTED because verification failed
+        context(bob(), 0);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            contract.accept_job(job_id)
+        }));
+        assert!(result.is_err());
+        let job = contract.get_job(job_id).unwrap();
+        assert!(matches!(job.status, JobStatus::Submitted));
     }
 
     #[test]

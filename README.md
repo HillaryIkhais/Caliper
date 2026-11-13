@@ -43,18 +43,20 @@ switch to another worker.
 
 | Guarantee | Meaning |
 |---|---|
-| Authority attenuation | A child cannot acquire permissions, recipients, assets, or spending limits its parent does not possess. |
+| Authority attenuation | A child cannot acquire permissions, recipients, assets, or spending limits its parent does not possess. Only native NEAR is payable; non-NEAR asset arguments are rejected. |
 | Commitment isolation | Committed funds cannot be spent twice; exhausted or cancelled jobs release unused commitments. |
-| Branch revocation | Revoking a parent invalidates every descendant. Unrelated branches survive. |
+| Branch revocation | Revoking a parent invalidates every descendant. Unrelated branches survive, and budget already spent by the revoked branch is not reissued. |
 | Genuine role separation | Coordinator, worker, and verifier need distinct authority nodes **and** distinct NEAR account holders. |
 | Worker cannot self-certify | `submit_deliverable` accepts only an artifact hash. The worker cannot supply diff or tampering claims. |
-| Artifact-bound evidence | The verifier signs job ID, attempt, artifact, criteria, baseline, acceptance policy, diff, protected-file result, exit code, runner version, and outcome. |
+| Artifact-bound evidence | The verifier signs job ID, attempt, claimed artifact, criteria, baseline, acceptance policy, diff, artifact-match flag, protected-file result, separate test and CI exit codes, runner version, and outcome. A hash mismatch is recorded as a normal failed attempt. |
 | No stale verification | Every submission increments the attempt and clears all previous evidence. A success cannot authorize a later artifact. |
 | Truthful settlement | `PaymentPending` is not `Paid`. Only a successful transfer callback moves the job to `Paid`; retries cannot double-pay. |
 
 The acceptance-policy hash pins the complete verification policy: the manifest, acceptance
-criteria, baseline identity, test and CI commands, protected paths, and every protected file.
-The runner recomputes that policy from disk and the pinned criteria hash before it signs. A
+criteria, full baseline tree hash, baseline commit, test and CI commands, protected paths, and
+every protected file. The baseline commit is a real deterministic git commit SHA derived from
+the fixture tree, not a label. The runner recreates that commit, checks it against the pinned
+SHA, recomputes the policy from disk, and rechecks the criteria hash before it signs. A
 mismatch aborts verification instead of producing an attestation.
 
 The contract verifies the authorized verifier's Ed25519 signature over a canonical
@@ -163,16 +165,16 @@ RULES.md                         economic and trust rules
 
 Views include `get_node`, `get_root`, `get_available`, `is_valid`, `get_execution`,
 `list_executions`, `list_revocations`, `get_job`, `get_job_verification`, `list_jobs`, and
-`get_total_locked`.
+`get_total_allocated` (cumulative allocation granted, not the current unlocked balance).
 
 ## Verification evidence
 
 The canonical attestation body is identical in Rust and TypeScript:
 
 ```
-caliper-attestation-v1|job_id|attempt|deliverable_hash|acceptance_criteria_hash|
-baseline_commit|acceptance_suite_hash|diff_hash|protected_files_clean|test_exit_code|
-runner_version|passed
+caliper-attestation-v2|job_id|attempt|deliverable_hash|acceptance_criteria_hash|
+baseline_commit|acceptance_suite_hash|diff_hash|deliverable_matches_claim|
+protected_files_clean|test_exit_code|ci_exit_code|runner_version|passed
 ```
 
 The report digest is `sha256:` over that body. The Ed25519 signature covers
@@ -184,21 +186,24 @@ and the TypeScript suite.
 ## Tests
 
 ```bash
-cd contract && cargo test          # 32 contract tests
-npm run test:node                  # 16 market, runner, and end-to-end tests
+cd contract && cargo test          # 39 contract tests
+npm run test:node                  # 20 market, runner, and end-to-end tests
 npm run verify                     # exported-state fixtures
-cd contract && cargo build --release --target wasm32-unknown-unknown  # ~327 KB wasm artifact
+cd contract && cargo build --release --target wasm32-unknown-unknown  # ~331 KB wasm artifact
 ```
 
 Contract tests cover role separation, same-account/different-node rejection, revoked roles,
 wrong artifact/criteria/signature, old-attempt replay, stale-success prevention, retry
 exhaustion and commitment release, pending payment, failed transfer, idempotent settlement,
-and the existing authority/commitment/revocation guarantees.
+revocation that retains already-spent or pending budget, a recorded hash-mismatch failure,
+native-NEAR-only spends, verified-job cancellation after role revocation, and the existing
+authority/commitment/revocation guarantees.
 
 Runner tests cover a genuine fix, a deleted protected test, a weakened assertion, a disabled
-CI check, suite restoration, and old-report replay. Market tests cover duplicate commitments, invalid and late reveals, deterministic selection,
-tie-breaking, invalid-bid exclusion, transcript reproducibility, and the explicit non-private
-simulation label.
+CI check, suite restoration, old-report replay, a mutated baseline commit, protected-file
+renames, and node_modules exclusion. Market tests cover duplicate commitments, invalid and
+late reveals, deterministic selection, tie-breaking, invalid-bid exclusion, transcript
+reproducibility, and the explicit non-private simulation label.
 
 ## NEAR deployment path
 

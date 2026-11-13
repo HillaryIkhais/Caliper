@@ -68,6 +68,32 @@ test("complete adversarial scenario runs end to end", () => {
   );
 });
 
+test("revoking a branch does not reissue budget it already spent", () => {
+  const chain = new LocalCaliperChain("owner.local");
+  const root = chain.createRoot(
+    "coordinator.local",
+    nearFromTenths(1000n),
+    permissions(nearFromTenths(1000n)),
+  );
+  const child = chain.delegate(
+    root,
+    "worker.local",
+    nearFromTenths(400n),
+    permissions(nearFromTenths(400n)),
+  );
+
+  chain.spend(child, "worker.local", "vendor.local", nearFromTenths(300n));
+  chain.revoke(child, "coordinator.local");
+
+  const rootNode = chain.node(root);
+  assert.equal(rootNode.committed_to_children, "0");
+  assert.equal(rootNode.spent, nearFromTenths(300n));
+  assert.throws(
+    () => chain.spend(root, "coordinator.local", "vendor.local", nearFromTenths(701n)),
+    /uncommitted allocation/,
+  );
+});
+
 test("old attempt report and old artifact report cannot be reused", () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "caliper-old-report-"));
   try {

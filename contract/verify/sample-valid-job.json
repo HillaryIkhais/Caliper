@@ -157,8 +157,8 @@
       "verifier_public_key": "1dfb543aac40cdf79702943bb3bb6dce08d4bb0403e9b9cf7b73e533325d1da3",
       "budget": "20000000000000000000000000",
       "acceptance_criteria_hash": "sha256:3a36a72405527cd56c39c8b8e3e24bb909851188239b5c70b1a223144efef4bf",
-      "acceptance_suite_hash": "sha256:1fce1ec372b70300dc290aee5ff982e2e2f0943da3439b80b5ad7deadf76accc",
-      "baseline_commit": "fixture-baseline-v1",
+      "acceptance_suite_hash": "sha256:06ca62dcf4d445fb2c4aebbfb897c81ae50eff654db58b851709538461f00472",
+      "baseline_commit": "214225e264d7333447bb2b1916bd0f6974a213b8",
       "market_transcript_hash": "sha256:7616df9128e1f70949094d3f3585c5241c0049099a8d5952653d3096342e5f07",
       "protected_files": [
         "tests/**",
@@ -169,26 +169,28 @@
       "max_attempts": 2,
       "modified_files_hash": "sha256:77a0fed7bac2bb698540d213a3220699cfa7b9192f47d3e815d5b55891543a8c",
       "tampering_detected": false,
-      "independent_report_hash": "sha256:6e22efd42a30d33d9c935bf0174752482036cef3ead03dabe4144a12c70814ae",
+      "independent_report_hash": "sha256:6e1b92c0807424e1de480c3aa19c2fc16ef08549199e7e94efdb37d5ee13349c",
       "independent_passed": true,
       "test_exit_code": 0,
       "verification": {
         "attestation": {
-          "version": "caliper-attestation-v1",
+          "version": "caliper-attestation-v2",
           "job_id": 1,
           "attempt": 2,
           "deliverable_hash": "sha256:1422550dad99098317100177a4ec6ffa140c81b7badd6abf5622a6624acb283b",
           "acceptance_criteria_hash": "sha256:3a36a72405527cd56c39c8b8e3e24bb909851188239b5c70b1a223144efef4bf",
-          "baseline_commit": "fixture-baseline-v1",
-          "acceptance_suite_hash": "sha256:1fce1ec372b70300dc290aee5ff982e2e2f0943da3439b80b5ad7deadf76accc",
+          "baseline_commit": "214225e264d7333447bb2b1916bd0f6974a213b8",
+          "acceptance_suite_hash": "sha256:06ca62dcf4d445fb2c4aebbfb897c81ae50eff654db58b851709538461f00472",
           "diff_hash": "sha256:77a0fed7bac2bb698540d213a3220699cfa7b9192f47d3e815d5b55891543a8c",
+          "deliverable_matches_claim": true,
           "protected_files_clean": true,
           "test_exit_code": 0,
+          "ci_exit_code": 0,
           "runner_version": "caliper-runner-v1",
           "passed": true,
-          "report_digest": "sha256:6e22efd42a30d33d9c935bf0174752482036cef3ead03dabe4144a12c70814ae",
+          "report_digest": "sha256:6e1b92c0807424e1de480c3aa19c2fc16ef08549199e7e94efdb37d5ee13349c",
           "verifier_public_key": "1dfb543aac40cdf79702943bb3bb6dce08d4bb0403e9b9cf7b73e533325d1da3",
-          "signature": "706ffd5002cb82face0dd5592ba69050d33d4736380344139985bde4bf7db9f6d94487da23a9596aba72040386a66f6b3917966b97470d97c8b96b51af31da0e"
+          "signature": "1b90418824d8d7bdb47528749b59aa499a49190396ec5d7e84ac038527927e67e06b7ce1dfd23ef78c5e3e8b7526d63fb17759dbc11b46a0125cc235d35b6f0c"
         },
         "recorded_at": 12
       },
@@ -198,7 +200,9 @@
       "submitted_at": 11,
       "verified_at": 12,
       "resolved_at": 13,
-      "paid_at": 13
+      "paid_at": 13,
+      "deliverable_matches_claim": true,
+      "ci_exit_code": 0
     }
   ]
 }

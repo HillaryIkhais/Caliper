@@ -57,4 +57,4 @@ jobs:
             sleep 0.5
           done
           curl -sf -X POST http://127.0.0.1:4317/api/run > /tmp/caliper-run.json
-          node -e 'const r=require("/tmp/caliper-run.json"); if (r.payment.state!=="Paid" || r.attempts[0].chain_status!=="Rejected") process.exit(1)'
+          node -e 'const r=require("/tmp/caliper-run.json"); const a=r.attempts[1].report.attestation; if (r.payment.state!=="Paid" || r.attempts[0].chain_status!=="Rejected" || !a.deliverable_matches_claim || a.ci_exit_code!==0) process.exit(1)'

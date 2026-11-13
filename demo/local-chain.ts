@@ -59,7 +59,9 @@ export interface SimJob {
   tampering_detected: boolean;
   independent_report_hash: string | null;
   independent_passed: boolean | null;
+  deliverable_matches_claim: boolean | null;
   test_exit_code: number | null;
+  ci_exit_code: number | null;
   verification: { attestation: VerificationAttestation; recorded_at: number } | null;
   status: JobStatus;
   payment_error: string | null;
@@ -207,6 +209,24 @@ export class LocalCaliperChain {
     return id;
   }
 
+  spend(nodeId: number, caller: string, recipient: string, amount: Balance): void {
+    const node = this.node(nodeId);
+    if (caller !== node.holder) throw new Error("only the node's holder may spend");
+    if (!this.isAuthorityValid(nodeId)) throw new Error("authority is revoked or expired");
+    if (BigInt(amount) <= 0n) throw new Error("amount must be positive");
+    if (BigInt(amount) > this.available(nodeId)) {
+      throw new Error("spend exceeds uncommitted allocation");
+    }
+    if (BigInt(amount) > BigInt(node.permissions.max_per_tx)) {
+      throw new Error("spend exceeds per-tx cap");
+    }
+    if (!node.permissions.recipients.includes(recipient)) {
+      throw new Error("recipient not allowed");
+    }
+    node.spent = (BigInt(node.spent) + BigInt(amount)).toString();
+    this.log("spend", `${caller} spent ${amount} from node ${nodeId}`);
+  }
+
   revoke(nodeId: number, caller: string): void {
     const node = this.node(nodeId);
     if (caller !== this.owner) {
@@ -219,6 +239,13 @@ export class LocalCaliperChain {
       if (!allowed) throw new Error("only the owner or an ancestor may revoke");
     }
     const stack = [nodeId, ...this.descendantIds(nodeId)];
+    let branchSpent = 0n;
+    for (const id of stack) {
+      branchSpent += BigInt(this.node(id).spent);
+    }
+    if (branchSpent > BigInt(node.allocation)) {
+      throw new Error("branch spend exceeds revoked allocation");
+    }
     for (const id of stack) {
       const n = this.node(id);
       n.active = false;
@@ -228,9 +255,10 @@ export class LocalCaliperChain {
       parent.committed_to_children = (
         BigInt(parent.committed_to_children) - BigInt(node.allocation)
       ).toString();
+      parent.spent = (BigInt(parent.spent) + branchSpent).toString();
       parent.children = parent.children.filter((child) => child !== nodeId);
     }
-    this.log("revoke", `authority node ${nodeId} revoked`);
+    this.log("revoke", `authority node ${nodeId} revoked; retained ${branchSpent} spent`);
   }
 
   private descendantIds(id: number): number[] {
@@ -309,7 +337,9 @@ export class LocalCaliperChain {
       tampering_detected: false,
       independent_report_hash: null,
       independent_passed: null,
+      deliverable_matches_claim: null,
       test_exit_code: null,
+      ci_exit_code: null,
       verification: null,
       status: "Open",
       payment_error: null,
@@ -347,7 +377,9 @@ export class LocalCaliperChain {
     job.tampering_detected = false;
     job.independent_report_hash = null;
     job.independent_passed = null;
+    job.deliverable_matches_claim = null;
     job.test_exit_code = null;
+    job.ci_exit_code = null;
     job.verification = null;
     job.verified_at = null;
   }
@@ -395,7 +427,9 @@ export class LocalCaliperChain {
     job.tampering_detected = !attestation.protected_files_clean;
     job.independent_report_hash = attestation.report_digest;
     job.independent_passed = attestation.passed;
+    job.deliverable_matches_claim = attestation.deliverable_matches_claim;
     job.test_exit_code = attestation.test_exit_code;
+    job.ci_exit_code = attestation.ci_exit_code;
     job.verified_at = this.tick();
     job.verification = { attestation, recorded_at: job.verified_at };
 
@@ -485,7 +519,7 @@ export class LocalCaliperChain {
   cancelJob(jobId: number, caller: string): void {
     const job = this.job(jobId);
     if (caller !== job.coordinator_holder) throw new Error("only the coordinator may cancel");
-    if (!["Open", "Submitted", "Rejected"].includes(job.status)) {
+    if (!["Open", "Submitted", "Rejected", "Verified", "PaymentFailed"].includes(job.status)) {
       throw new Error("job cannot be cancelled in its current state");
     }
     job.status = "Cancelled";

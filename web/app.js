@@ -176,6 +176,7 @@ function renderAttempt(attempt) {
     ["Policy", report.acceptance_policy_version ?? "—"],
     ["Manifest", short(report.manifest_hash, 20, 8)],
     ["Diff", short(report.diff_hash, 20, 8)],
+    ["Artifact matches claim", String(report.attestation.deliverable_matches_claim)],
     ["Acceptance suite exit", String(report.test_exit_code)],
     ["CI check exit", String(report.ci_exit_code)],
     ["Protected files clean", String(report.attestation.protected_files_clean)],

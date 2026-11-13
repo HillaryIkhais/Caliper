@@ -26,7 +26,12 @@ Different node IDs assigned to the same account do not satisfy independence.
 
 Authority is attenuated from the owner downward. Revoking any node transitively
 invalidates its descendants. Every job transition revalidates the relevant authorities,
-so a revoked or expired role cannot continue acting on an existing job.
+so a revoked or expired role cannot continue acting on an existing job. Revocation rolls
+only the branch's unspent budget back to its parent; funds already paid out, or still
+pending in a transfer, remain accounted for and are never reissued.
+
+Only native NEAR is payable today. The optional asset argument exists for a future token
+extension but any non-`None` asset is rejected rather than mistakenly sending NEAR.
 
 ## 2. Market sequence
 
@@ -97,8 +102,9 @@ market.
 - The verifier must be a distinct identity from the worker and coordinator.
 - The verifier evaluates the exact current artifact and current attempt number.
 - An attestation binds: job ID, attempt number, deliverable hash, acceptance-criteria
-  hash, baseline commit, acceptance-policy hash, actual diff hash, protected-file result, test exit
-  code, runner version, and pass/fail outcome.
+  hash, baseline commit, acceptance-policy hash, actual diff hash, artifact-match flag,
+  protected-file result, test exit code, CI exit code, runner version, and pass/fail outcome.
+  A deliverable hash mismatch is a normal failed attempt, not an unrecordable report.
 - The attestation is signed with Ed25519 by the verifier key pinned at job creation.
   The canonical message and digest are identical in Rust and TypeScript.
 - A failed or tampered submission cannot be accepted.
@@ -124,7 +130,9 @@ Open --submit--> Submitted --pass--> Verified --accept--> PaymentPending --callb
 
 `Paid` means the transfer succeeded. `PaymentPending` never means paid. On transfer
 failure the budget stays reserved and the job is `PaymentFailed`; a retry cannot pay
-twice because only a `PaymentPending` job can settle.
+twice because only a `PaymentPending` job can settle. A coordinator may cancel a
+`Verified` or `PaymentFailed` job before settlement, which releases the commitment even
+if the worker or verifier was revoked after verification.
 
 ## 6. Evidence and trust assumptions
 
@@ -135,8 +143,9 @@ It does enforce that the evidence presented for payment is bound to the current 
 attempt, artifact, criteria, baseline, suite, verifier key, and a valid signature.
 
 The `acceptance_suite_hash` field pins the complete policy: the manifest, acceptance criteria,
-baseline identity, test and CI commands, protected paths, and protected file contents. The
-runner recomputes this policy before signing and refuses to attest on a mismatch.
+full baseline tree hash, deterministic baseline commit, test and CI commands, protected paths,
+and protected file contents. The runner recomputes this policy before signing and refuses to
+attest on a mismatch.
 
 Execution boundary: the runner copies the candidate into a temporary directory, sanitizes the
 environment, and applies a timeout. It does not provide an OS sandbox, filesystem jail, or

@@ -118,6 +118,56 @@ test("runner refuses to sign a policy that does not match the pinned hashes", ()
   );
 });
 
+test("runner rejects a baseline tree that does not match the pinned commit", () => {
+  const fixture = path.join(tempRoot, "baseline-mismatch");
+  fs.cpSync(path.dirname(BASELINE_DIR), fixture, { recursive: true });
+  const mutatedBaseline = path.join(fixture, "baseline");
+  fs.appendFileSync(path.join(mutatedBaseline, "src", "auth.js"), "\n// altered baseline\n");
+  const candidate = path.join(import.meta.dirname, "fixture", "submissions", "corrected");
+
+  assert.throws(
+    () =>
+      verifyArtifact({
+        job_id: jobCounter++,
+        attempt: 1,
+        candidateDir: candidate,
+        claimedDeliverableHash: hashTree(candidate),
+        acceptanceCriteriaHash: computeAcceptanceCriteriaHash(manifest, mutatedBaseline),
+        acceptanceSuiteHash: computeAcceptancePolicyHash(mutatedBaseline, manifest),
+        verifierPrivateKey: key.privateKey,
+        baselineDir: mutatedBaseline,
+        workDir: path.join(tempRoot, "work"),
+      }),
+    /pinned baseline commit mismatch/,
+  );
+});
+
+test("node_modules is excluded from both hashing and execution copies", () => {
+  const candidate = path.join(tempRoot, "candidate-node-modules");
+  fs.cpSync(path.join(import.meta.dirname, "fixture", "submissions", "corrected"), candidate, {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(candidate, "node_modules", "junk"), { recursive: true });
+  fs.writeFileSync(path.join(candidate, "node_modules", "junk", "index.js"), "throw new Error('ignored');\n");
+  const report = verify(candidate);
+  assert.equal(report.passed, true);
+  assert.equal(report.attestation.deliverable_matches_claim, true);
+});
+
+test("renaming a protected file is detected as a violation", () => {
+  const candidate = copyBaseline("renamed-protected");
+  fs.renameSync(
+    path.join(candidate, "tests", "auth.test.js"),
+    path.join(candidate, "tests", "auth.test.js.bak"),
+  );
+  const report = verify(candidate);
+  assert.equal(report.passed, false);
+  assert.ok(
+    report.protected_violations.some((entry) => entry.includes("tests/auth.test.js")),
+    report.protected_violations.join(", "),
+  );
+});
+
 test("deleted protected test is detected", () => {
   const candidate = copyBaseline("deleted-test");
   fs.rmSync(path.join(candidate, "tests", "auth.test.js"));

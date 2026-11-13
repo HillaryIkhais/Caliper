@@ -1,7 +1,7 @@
 {
   "version": "caliper-acceptance-v1",
   "task": "Fix the billing authorization bypass in src/auth.js",
-  "baseline_commit": "fixture-baseline-v1",
+  "baseline_commit": "214225e264d7333447bb2b1916bd0f6974a213b8",
   "test_command": ["node", "tests/auth.test.js"],
   "ci_command": ["node", "ci/check.js"],
   "acceptance_suite": "tests/auth.test.js",

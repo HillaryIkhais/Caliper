@@ -81,7 +81,9 @@ interface Job {
     tampering_detected: boolean;
     independent_report_hash: string | null;
     independent_passed: boolean | null;
+    deliverable_matches_claim: boolean | null;
     test_exit_code: number | null;
+    ci_exit_code: number | null;
     verification: {
         attestation: {
             version: string;
@@ -92,8 +94,10 @@ interface Job {
             baseline_commit: string;
             acceptance_suite_hash: string;
             diff_hash: string;
+            deliverable_matches_claim: boolean;
             protected_files_clean: boolean;
             test_exit_code: number;
+            ci_exit_code: number;
             runner_version: string;
             passed: boolean;
             report_digest: string;
@@ -360,8 +364,20 @@ function verify(state: State, currentBlock: number | null) {
             if (a.verifier_public_key !== job.verifier_public_key) {
                 fail("job", `job ${job.id} attestation uses a different verifier key`, undefined, undefined, job.id);
             }
-            if (a.passed !== (a.protected_files_clean && a.test_exit_code === 0)) {
+            if (
+                a.passed !==
+                (a.deliverable_matches_claim &&
+                    a.protected_files_clean &&
+                    a.test_exit_code === 0 &&
+                    a.ci_exit_code === 0)
+            ) {
                 fail("job", `job ${job.id} attestation outcome is inconsistent`, undefined, undefined, job.id);
+            }
+            if (job.deliverable_matches_claim !== a.deliverable_matches_claim) {
+                fail("job", `job ${job.id} deliverable-match flag disagrees with the stored attestation`, undefined, undefined, job.id);
+            }
+            if (job.ci_exit_code !== a.ci_exit_code) {
+                fail("job", `job ${job.id} CI exit code disagrees with the stored attestation`, undefined, undefined, job.id);
             }
             if (a.passed !== job.independent_passed || a.report_digest !== job.independent_report_hash) {
                 fail("job", `job ${job.id} convenience fields disagree with the stored attestation`, undefined, undefined, job.id);

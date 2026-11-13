@@ -10,7 +10,7 @@ import {
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-export const ATTESTATION_VERSION = "caliper-attestation-v1";
+export const ATTESTATION_VERSION = "caliper-attestation-v2";
 export const RUNNER_VERSION = "caliper-runner-v1";
 
 export interface AttestationFields {
@@ -22,8 +22,10 @@ export interface AttestationFields {
   baseline_commit: string;
   acceptance_suite_hash: string;
   diff_hash: string;
+  deliverable_matches_claim: boolean;
   protected_files_clean: boolean;
   test_exit_code: number;
+  ci_exit_code: number;
   runner_version: string;
   passed: boolean;
 }
@@ -52,8 +54,10 @@ export function canonicalAttestationBody(a: AttestationFields): string {
     a.baseline_commit,
     a.acceptance_suite_hash,
     a.diff_hash,
+    a.deliverable_matches_claim ? "1" : "0",
     a.protected_files_clean ? "1" : "0",
     a.test_exit_code,
+    a.ci_exit_code,
     a.runner_version,
     a.passed ? "1" : "0",
   ].join("|");
@@ -146,7 +150,13 @@ export function attestationMismatches(
   if (attestation.verifier_public_key !== expected.verifier_public_key) {
     mismatches.push("verifier_public_key");
   }
-  if (attestation.passed !== (attestation.protected_files_clean && attestation.test_exit_code === 0)) {
+  if (
+    attestation.passed !==
+    (attestation.deliverable_matches_claim &&
+      attestation.protected_files_clean &&
+      attestation.test_exit_code === 0 &&
+      attestation.ci_exit_code === 0)
+  ) {
     mismatches.push("outcome");
   }
   return mismatches;

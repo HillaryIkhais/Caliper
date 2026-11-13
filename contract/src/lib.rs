@@ -10,7 +10,7 @@ pub type ExecutionId = u64;
 pub type JobId = u64;
 
 /// Version string included in every attestation canonical message.
-pub const ATTESTATION_VERSION: &str = "caliper-attestation-v1";
+pub const ATTESTATION_VERSION: &str = "caliper-attestation-v2";
 /// The demonstration allows the initial attempt plus one correction.
 pub const MAX_JOB_ATTEMPTS: u32 = 2;
 
@@ -48,7 +48,8 @@ pub struct Node {
 pub struct Permissions {
     /// Allowed recipient accounts (deny-by-default empty = nothing).
     pub recipients: Vec<AccountId>,
-    /// Allowed assets (token contract ids); NEAR is always allowed implicitly.
+    /// Reserved for future token support. Only native NEAR is payable today;
+    /// `spend` rejects any non-`None` asset rather than silently transferring NEAR.
     pub assets: Vec<AccountId>,
     /// Maximum single spend (yoctoNEAR).
     pub max_per_tx: Balance,
@@ -125,12 +126,19 @@ pub struct VerificationAttestation {
     pub acceptance_suite_hash: String,
     /// SHA-256 of the actual diff computed by the independent runner.
     pub diff_hash: String,
+    /// True only when the on-disk artifact hashed by the verifier equals the
+    /// deliverable hash the worker submitted. A hash mismatch is a failed
+    /// verification, not an unrecordable attestation.
+    pub deliverable_matches_claim: bool,
     /// True only when no protected file was changed or deleted.
     pub protected_files_clean: bool,
     /// Exit code of the pinned acceptance suite.
     pub test_exit_code: i32,
+    /// Exit code of the pinned CI check.
+    pub ci_exit_code: i32,
     pub runner_version: String,
-    /// Must equal `protected_files_clean && test_exit_code == 0`.
+    /// Must equal `deliverable_matches_claim && protected_files_clean &&
+    /// test_exit_code == 0 && ci_exit_code == 0`.
     pub passed: bool,
     /// `sha256:<hex>` digest of the canonical attestation body.
     pub report_digest: String,
@@ -194,8 +202,12 @@ pub struct Job {
     pub independent_report_hash: Option<String>,
     /// Result of the independent verification run for the current attempt.
     pub independent_passed: Option<bool>,
+    /// Whether the on-disk artifact matched the worker's claimed hash.
+    pub deliverable_matches_claim: Option<bool>,
     /// Exit code of the pinned acceptance suite for the current attempt.
     pub test_exit_code: Option<i32>,
+    /// Exit code of the pinned CI check for the current attempt.
+    pub ci_exit_code: Option<i32>,
     /// Full signed evidence for the current attempt.
     pub verification: Option<VerificationRecord>,
     /// Current job status.
@@ -218,7 +230,7 @@ pub struct Job {
 /// without bumping `ATTESTATION_VERSION`.
 pub fn canonical_attestation_body(attestation: &VerificationAttestation) -> String {
     format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         attestation.version,
         attestation.job_id,
         attestation.attempt,
@@ -227,8 +239,10 @@ pub fn canonical_attestation_body(attestation: &VerificationAttestation) -> Stri
         attestation.baseline_commit,
         attestation.acceptance_suite_hash,
         attestation.diff_hash,
+        if attestation.deliverable_matches_claim { "1" } else { "0" },
         if attestation.protected_files_clean { "1" } else { "0" },
         attestation.test_exit_code,
+        attestation.ci_exit_code,
         attestation.runner_version,
         if attestation.passed { "1" } else { "0" },
     )
@@ -264,7 +278,7 @@ pub struct Contract {
     executions: UnorderedMap<ExecutionId, Execution>,
     revocations: UnorderedMap<AuthorityId, Revocation>,
     jobs: UnorderedMap<JobId, Job>,
-    total_locked: Balance,
+    total_allocated: Balance,
     owner: AccountId,
     root: Option<AuthorityId>,
 }
@@ -280,7 +294,7 @@ impl Default for Contract {
             executions: UnorderedMap::new(b"e"),
             revocations: UnorderedMap::new(b"r"),
             jobs: UnorderedMap::new(b"j"),
-            total_locked: 0,
+            total_allocated: 0,
             owner: "owner.near".parse().unwrap(),
             root: None,
         }
@@ -299,7 +313,7 @@ impl Contract {
             executions: UnorderedMap::new(b"e"),
             revocations: UnorderedMap::new(b"r"),
             jobs: UnorderedMap::new(b"j"),
-            total_locked: 0,
+            total_allocated: 0,
             owner: "owner.near".parse().unwrap(),
             root: None,
         }
@@ -338,6 +352,19 @@ impl Contract {
             stack.extend(self.node(child).children.iter().copied());
         }
         out
+    }
+
+    /// Nearest ancestor that can still exercise authority. Used to return a
+    /// failed pending payout to a live branch after the spending node was revoked.
+    fn nearest_valid_ancestor(&self, id: AuthorityId, block_height: u64) -> Option<AuthorityId> {
+        let mut current = self.node(id).parent;
+        while let Some(candidate) = current {
+            if self.is_authority_valid(candidate, block_height) {
+                return Some(candidate);
+            }
+            current = self.node(candidate).parent;
+        }
+        None
     }
 
     fn is_descendant_of(&self, id: AuthorityId, ancestor: AuthorityId) -> bool {
@@ -448,7 +475,9 @@ impl Contract {
         job.tampering_detected = false;
         job.independent_report_hash = None;
         job.independent_passed = None;
+        job.deliverable_matches_claim = None;
         job.test_exit_code = None;
+        job.ci_exit_code = None;
         job.verification = None;
         job.verified_at = None;
     }
@@ -501,7 +530,7 @@ impl Contract {
             executions: UnorderedMap::new(b"e"),
             revocations: UnorderedMap::new(b"r"),
             jobs: UnorderedMap::new(b"j"),
-            total_locked: 0,
+            total_allocated: 0,
             owner,
             root: None,
         }
@@ -547,7 +576,7 @@ impl Contract {
         };
         self.nodes.insert(&id, &node);
         self.add_holder(&holder, id);
-        self.total_locked += amount;
+        self.total_allocated += amount;
         self.root = Some(id);
 
         id
@@ -610,7 +639,7 @@ impl Contract {
             .expect("overflow");
         parent.children.push(id);
         self.set_node(parent_id, parent);
-        self.total_locked += amount;
+        self.total_allocated += amount;
 
         id
     }
@@ -646,12 +675,10 @@ impl Contract {
             node.permissions.recipients.contains(&recipient),
             "recipient not allowed"
         );
-        if let Some(a) = &asset {
-            assert!(
-                node.permissions.assets.contains(a),
-                "asset not allowed"
-            );
-        }
+        assert!(
+            asset.is_none(),
+            "only native NEAR is supported; token transfers are not implemented"
+        );
 
         let id = self.next_execution_id;
         self.next_execution_id += 1;
@@ -701,7 +728,24 @@ impl Contract {
                 execution.status = ExecutionStatus::Rejected;
                 let mut node = self.node(execution.node_id);
                 node.spent = node.spent.checked_sub(amount).expect("spent underflow");
+                let revoked = !node.active;
                 self.set_node(execution.node_id, node);
+
+                // Revocation rolls the branch's spent budget into the parent. If a
+                // pending payout later fails, the refund must land in a live node
+                // too, otherwise the parent would permanently lose that budget.
+                if revoked {
+                    if let Some(ancestor_id) =
+                        self.nearest_valid_ancestor(execution.node_id, env::block_height())
+                    {
+                        let mut ancestor = self.node(ancestor_id);
+                        ancestor.spent = ancestor
+                            .spent
+                            .checked_sub(amount)
+                            .expect("ancestor spent underflow");
+                        self.set_node(ancestor_id, ancestor);
+                    }
+                }
             }
         }
         self.executions.insert(&execution_id, &execution);
@@ -730,6 +774,21 @@ impl Contract {
         let descendants = self.descendants(node_id);
         let mut to_revoke = vec![node_id];
         to_revoke.extend(descendants);
+
+        // Funds already spent anywhere in the branch were paid out, so they cannot
+        // be reissued when the branch is revoked. Roll them up into the parent as
+        // spent while releasing only the unspent remainder of the commitment.
+        // Pending spends are included here and refunded by `on_payout` if they fail.
+        let branch_spent = to_revoke
+            .iter()
+            .map(|id| self.node(*id).spent)
+            .fold(0u128, |acc, spent| acc.checked_add(spent).expect("overflow"));
+        let node_allocation = self.node(node_id).allocation;
+        assert!(
+            branch_spent <= node_allocation,
+            "branch spend exceeds revoked allocation"
+        );
+
         for id in &to_revoke {
             let mut node = self.node(*id).clone();
             node.active = false;
@@ -745,12 +804,15 @@ impl Contract {
         }
 
         if let Some(parent_id) = self.node(node_id).parent {
-            let node_allocation = self.node(node_id).allocation;
             let mut parent = self.node(parent_id).clone();
             parent.committed_to_children = parent
                 .committed_to_children
                 .checked_sub(node_allocation)
                 .expect("commitment underflow");
+            parent.spent = parent
+                .spent
+                .checked_add(branch_spent)
+                .expect("overflow");
             parent.children.retain(|&c| c != node_id);
             self.set_node(parent_id, parent);
         }
@@ -864,7 +926,9 @@ impl Contract {
             tampering_detected: false,
             independent_report_hash: None,
             independent_passed: None,
+            deliverable_matches_claim: None,
             test_exit_code: None,
+            ci_exit_code: None,
             verification: None,
             status: JobStatus::Open,
             payment_error: None,
@@ -960,7 +1024,10 @@ impl Contract {
         assert!(!attestation.diff_hash.is_empty(), "diff hash required");
         assert_eq!(
             attestation.passed,
-            attestation.protected_files_clean && attestation.test_exit_code == 0,
+            attestation.deliverable_matches_claim
+                && attestation.protected_files_clean
+                && attestation.test_exit_code == 0
+                && attestation.ci_exit_code == 0,
             "attestation outcome is inconsistent with its evidence"
         );
 
@@ -970,7 +1037,9 @@ impl Contract {
         job.tampering_detected = !attestation.protected_files_clean;
         job.independent_report_hash = Some(attestation.report_digest.clone());
         job.independent_passed = Some(attestation.passed);
+        job.deliverable_matches_claim = Some(attestation.deliverable_matches_claim);
         job.test_exit_code = Some(attestation.test_exit_code);
+        job.ci_exit_code = Some(attestation.ci_exit_code);
         job.verified_at = Some(block_height);
 
         let record = VerificationRecord {
@@ -1129,7 +1198,11 @@ impl Contract {
         assert!(
             matches!(
                 job.status,
-                JobStatus::Open | JobStatus::Submitted | JobStatus::Rejected
+                JobStatus::Open
+                    | JobStatus::Submitted
+                    | JobStatus::Rejected
+                    | JobStatus::Verified
+                    | JobStatus::PaymentFailed
             ),
             "job cannot be cancelled in its current state"
         );
@@ -1179,8 +1252,8 @@ impl Contract {
         self.revocations.values().collect()
     }
 
-    pub fn get_total_locked(&self) -> U128 {
-        U128(self.total_locked)
+    pub fn get_total_allocated(&self) -> U128 {
+        U128(self.total_allocated)
     }
 
     pub fn get_job(&self, id: JobId) -> Option<Job> {
@@ -1319,14 +1392,16 @@ mod tests {
         }
     }
 
-    fn make_attestation(
+    fn make_attestation_full(
         contract: &Contract,
         job_id: JobId,
         key: &SigningKey,
         attempt: u32,
         deliverable_hash: &str,
+        deliverable_matches_claim: bool,
         clean: bool,
-        exit_code: i32,
+        test_exit_code: i32,
+        ci_exit_code: i32,
         passed: bool,
     ) -> VerificationAttestation {
         let job = contract.get_job(job_id).unwrap();
@@ -1339,8 +1414,10 @@ mod tests {
             baseline_commit: job.baseline_commit.clone(),
             acceptance_suite_hash: job.acceptance_suite_hash.clone(),
             diff_hash: "sha256:diff-v1".to_string(),
+            deliverable_matches_claim,
             protected_files_clean: clean,
-            test_exit_code: exit_code,
+            test_exit_code,
+            ci_exit_code,
             runner_version: "caliper-runner-v1".to_string(),
             passed,
             report_digest: String::new(),
@@ -1352,6 +1429,30 @@ mod tests {
         let message = canonical_attestation_message(&attestation);
         attestation.signature = hex::encode(key.sign(message.as_bytes()).to_bytes());
         attestation
+    }
+
+    fn make_attestation(
+        contract: &Contract,
+        job_id: JobId,
+        key: &SigningKey,
+        attempt: u32,
+        deliverable_hash: &str,
+        clean: bool,
+        exit_code: i32,
+        passed: bool,
+    ) -> VerificationAttestation {
+        make_attestation_full(
+            contract,
+            job_id,
+            key,
+            attempt,
+            deliverable_hash,
+            true,
+            clean,
+            exit_code,
+            exit_code,
+            passed,
+        )
     }
 
     fn submit_and_verify_pass(f: &mut JobFixture, deliverable: &str) {
@@ -1412,6 +1513,21 @@ mod tests {
         assert!(id > 0);
         assert_eq!(contract.get_node(child).unwrap().spent, 30);
         assert_eq!(contract.get_available(child), U128(10));
+    }
+
+    #[test]
+    #[should_panic(expected = "only native NEAR is supported")]
+    fn spend_with_token_asset_rejected() {
+        let mut contract = Contract::new_for_test();
+        context(owner(), 100);
+        let root = contract.create_root(bob(), U128(100), root_permissions());
+        context(bob(), 0);
+        contract.spend(
+            root,
+            "vendor.near".parse().unwrap(),
+            U128(10),
+            Some("usdc.near".parse().unwrap()),
+        );
     }
 
     #[test]
@@ -1577,6 +1693,122 @@ mod tests {
         assert!(!contract.get_node(sub).unwrap().active);
         assert_eq!(contract.get_node(coordinator).unwrap().committed_to_children, 0);
         assert_eq!(contract.get_node(root).unwrap().committed_to_children, 80);
+    }
+
+    #[test]
+    fn revoke_child_after_settled_spend_does_not_reissue_it() {
+        let mut contract = Contract::new_for_test();
+        context(owner(), 100);
+        let root = contract.create_root(bob(), U128(100), root_permissions());
+        context(bob(), 0);
+        let child = contract.delegate(root, carol(), child_permissions(40), U128(40), None);
+
+        context(carol(), 0);
+        let execution = contract.spend(child, "vendor.near".parse().unwrap(), U128(30), None);
+        context_with_promise(CALIPER.parse().unwrap(), PromiseResult::Successful(vec![]));
+        contract.on_payout(execution, 30);
+        assert_eq!(contract.get_node(child).unwrap().spent, 30);
+
+        context(bob(), 0);
+        contract.revoke(child);
+
+        let root_node = contract.get_node(root).unwrap();
+        assert_eq!(root_node.committed_to_children, 0);
+        assert_eq!(root_node.spent, 30);
+        assert_eq!(contract.get_available(root), U128(70));
+
+        context(bob(), 0);
+        let _ = contract.spend(root, "vendor.near".parse().unwrap(), U128(70), None);
+        let overdraw = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            contract.spend(root, "vendor.near".parse().unwrap(), U128(1), None)
+        }));
+        assert!(overdraw.is_err());
+    }
+
+    #[test]
+    fn revocation_retains_pending_spend_until_failed_callback_refunds_it() {
+        let mut contract = Contract::new_for_test();
+        context(owner(), 100);
+        let root = contract.create_root(bob(), U128(100), root_permissions());
+        context(bob(), 0);
+        let child = contract.delegate(root, carol(), child_permissions(40), U128(40), None);
+
+        context(carol(), 0);
+        let execution = contract.spend(child, "vendor.near".parse().unwrap(), U128(30), None);
+        context(bob(), 0);
+        contract.revoke(child);
+
+        let root_node = contract.get_node(root).unwrap();
+        assert_eq!(root_node.committed_to_children, 0);
+        assert_eq!(root_node.spent, 30);
+        assert_eq!(contract.get_available(root), U128(70));
+
+        context_with_promise(CALIPER.parse().unwrap(), PromiseResult::Failed);
+        contract.on_payout(execution, 30);
+
+        let root_node = contract.get_node(root).unwrap();
+        assert_eq!(root_node.spent, 0);
+        assert_eq!(contract.get_available(root), U128(100));
+        assert!(matches!(
+            contract.get_execution(execution).unwrap().status,
+            ExecutionStatus::Rejected
+        ));
+
+        // Duplicate callbacks must not refund twice.
+        context_with_promise(CALIPER.parse().unwrap(), PromiseResult::Failed);
+        contract.on_payout(execution, 30);
+        assert_eq!(contract.get_node(root).unwrap().spent, 0);
+    }
+
+    #[test]
+    fn nested_revocation_rolls_up_spend_once() {
+        let mut contract = Contract::new_for_test();
+        context(owner(), 100);
+        let root = contract.create_root(bob(), U128(100), root_permissions());
+
+        context(bob(), 0);
+        let coordinator = contract.delegate(
+            root,
+            carol(),
+            Permissions {
+                recipients: vec!["vendor.near".parse().unwrap()],
+                assets: vec![],
+                max_per_tx: 60,
+                may_delegate: true,
+            },
+            U128(60),
+            None,
+        );
+        context(carol(), 0);
+        let research = contract.delegate(
+            coordinator,
+            dave(),
+            Permissions {
+                recipients: vec!["vendor.near".parse().unwrap()],
+                assets: vec![],
+                max_per_tx: 30,
+                may_delegate: true,
+            },
+            U128(30),
+            None,
+        );
+        context(dave(), 0);
+        let sub = contract.delegate(research, erin(), child_permissions(10), U128(10), None);
+
+        context(erin(), 0);
+        let _ = contract.spend(sub, "vendor.near".parse().unwrap(), U128(5), None);
+
+        context(carol(), 0);
+        contract.revoke(research);
+        assert_eq!(contract.get_node(coordinator).unwrap().spent, 5);
+        assert_eq!(contract.get_node(coordinator).unwrap().committed_to_children, 0);
+
+        context(bob(), 0);
+        contract.revoke(coordinator);
+        let root_node = contract.get_node(root).unwrap();
+        assert_eq!(root_node.spent, 5);
+        assert_eq!(root_node.committed_to_children, 0);
+        assert_eq!(contract.get_available(root), U128(95));
     }
 
     // ---------- role separation ----------
@@ -1849,6 +2081,66 @@ mod tests {
     // ---------- retry lifecycle ----------
 
     #[test]
+    fn deliverable_hash_mismatch_is_recorded_as_rejected_not_unrecordable() {
+        let mut f = setup_job();
+        context(carol(), 0);
+        f.contract.submit_deliverable(f.job, "sha256:claimed-artifact".to_string());
+
+        // The verifier hashed the on-disk artifact and it did not match the worker's
+        // claimed hash. Tests and protected files were clean, so the old v1
+        // single-exit encoding would have produced an unrecordable attestation.
+        let attestation = make_attestation_full(
+            &f.contract,
+            f.job,
+            &f.key,
+            1,
+            "sha256:claimed-artifact",
+            false,
+            true,
+            0,
+            0,
+            false,
+        );
+        context(dave(), 0);
+        f.contract.record_independent_verification(f.job, attestation);
+
+        let job = f.contract.get_job(f.job).unwrap();
+        assert!(matches!(job.status, JobStatus::Rejected));
+        assert_eq!(job.independent_passed, Some(false));
+        assert_eq!(job.deliverable_matches_claim, Some(false));
+        assert_eq!(job.test_exit_code, Some(0));
+        assert_eq!(job.ci_exit_code, Some(0));
+        assert!(!job.tampering_detected);
+
+        let record = job.verification.unwrap();
+        assert!(!record.attestation.deliverable_matches_claim);
+        assert_eq!(record.attestation.test_exit_code, 0);
+        assert_eq!(record.attestation.ci_exit_code, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "attestation outcome is inconsistent with its evidence")]
+    fn passed_attestation_requires_matching_deliverable_claim() {
+        let mut f = setup_job();
+        context(carol(), 0);
+        f.contract.submit_deliverable(f.job, "sha256:artifact".to_string());
+        let attestation = make_attestation_full(
+            &f.contract,
+            f.job,
+            &f.key,
+            1,
+            "sha256:artifact",
+            false,
+            true,
+            0,
+            0,
+            true,
+        );
+        context(dave(), 0);
+        f.contract.record_independent_verification(f.job, attestation);
+    }
+
+    #[test]
     fn failed_verification_blocks_payment_and_allows_correction() {
         let mut f = setup_job();
         context(carol(), 0);
@@ -2054,6 +2346,30 @@ mod tests {
     }
 
     #[test]
+    fn verified_job_can_be_cancelled_after_a_role_is_revoked() {
+        let mut f = setup_job();
+        submit_and_verify_pass(&mut f, "sha256:artifact");
+        assert!(matches!(
+            f.contract.get_job(f.job).unwrap().status,
+            JobStatus::Verified
+        ));
+
+        // The verifier or worker can be revoked before the coordinator accepts.
+        // Without a cancellable Verified state the job budget would stay committed
+        // forever because accept_job revalidates every role.
+        context(bob(), 0);
+        f.contract.revoke(f.worker);
+        context(bob(), 0);
+        f.contract.cancel_job(f.job);
+
+        let job = f.contract.get_job(f.job).unwrap();
+        assert!(matches!(job.status, JobStatus::Cancelled));
+        assert!(job.resolved_at.is_some());
+        let root = f.contract.get_node(f.root).unwrap();
+        assert_eq!(root.committed_to_children, 50 * UNIT);
+    }
+
+    #[test]
     fn cross_language_attestation_vector_matches() {
         let raw = include_str!("../../shared/attestation-vector.json");
         let vector: serde_json::Value = serde_json::from_str(raw).unwrap();
@@ -2066,8 +2382,10 @@ mod tests {
             baseline_commit: vector["attestation"]["baseline_commit"].as_str().unwrap().to_string(),
             acceptance_suite_hash: vector["attestation"]["acceptance_suite_hash"].as_str().unwrap().to_string(),
             diff_hash: vector["attestation"]["diff_hash"].as_str().unwrap().to_string(),
+            deliverable_matches_claim: vector["attestation"]["deliverable_matches_claim"].as_bool().unwrap(),
             protected_files_clean: vector["attestation"]["protected_files_clean"].as_bool().unwrap(),
             test_exit_code: vector["attestation"]["test_exit_code"].as_i64().unwrap() as i32,
+            ci_exit_code: vector["attestation"]["ci_exit_code"].as_i64().unwrap() as i32,
             runner_version: vector["attestation"]["runner_version"].as_str().unwrap().to_string(),
             passed: vector["attestation"]["passed"].as_bool().unwrap(),
             report_digest: String::new(),

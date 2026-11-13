@@ -41,9 +41,9 @@ attempt's worker claim is shown next to the computed evidence that blocked it.
 
 | Claim | Command / evidence |
 |---|---|
-| 32 contract tests pass | `cd contract && cargo test` |
+| 39 contract tests pass | `cd contract && cargo test` |
 | Contract compiles to wasm | `cd contract && cargo build --release --target wasm32-unknown-unknown` |
-| 16 off-chain tests pass | `npm run test:node` |
+| 20 off-chain tests pass | `npm run test:node` |
 | Exported-state auditor passes | `npm run verify` |
 | Adversarial loop works | `npm run demo` |
 | Tampering is detected, not trusted | `demo/runs/latest/attempt-1-report.json` |

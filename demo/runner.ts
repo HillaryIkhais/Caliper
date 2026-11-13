@@ -35,7 +35,20 @@ export interface AcceptanceManifest {
 export interface ChangedFile {
   status: string;
   path: string;
+  old_path?: string;
 }
+
+// Fixed identity and timestamps make the baseline commit deterministic, so the
+// manifest can pin a real git commit SHA rather than a human-readable label.
+const BASELINE_GIT_ENV = {
+  ...process.env,
+  GIT_AUTHOR_NAME: "CALIPER Runner",
+  GIT_AUTHOR_EMAIL: "runner@caliper.local",
+  GIT_AUTHOR_DATE: "2020-01-01T00:00:00Z",
+  GIT_COMMITTER_NAME: "CALIPER Runner",
+  GIT_COMMITTER_EMAIL: "runner@caliper.local",
+  GIT_COMMITTER_DATE: "2020-01-01T00:00:00Z",
+};
 
 export interface ManipulationEvidence {
   deleted_tests: string[];
@@ -146,6 +159,7 @@ export function computeAcceptancePolicyHash(
     version: ACCEPTANCE_POLICY_VERSION,
     manifest,
     acceptance_criteria_hash: computeAcceptanceCriteriaHash(manifest, baselineDir),
+    baseline_tree_hash: hashTree(baselineDir),
     protected_files: protectedFiles,
   });
 }
@@ -169,7 +183,7 @@ export function computeAcceptanceCriteriaHash(
 function copyTree(from: string, to: string): void {
   fs.mkdirSync(to, { recursive: true });
   for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
-    if (entry.name === ".git") continue;
+    if (entry.name === ".git" || entry.name === "node_modules") continue;
     const src = path.join(from, entry.name);
     const dest = path.join(to, entry.name);
     if (entry.isDirectory()) copyTree(src, dest);
@@ -184,8 +198,17 @@ function clearTreeExceptGit(dir: string): void {
   }
 }
 
-function run(command: string, args: string[], cwd: string): string {
-  const result = spawnSync(command, args, { cwd, encoding: "utf8" });
+function run(
+  command: string,
+  args: string[],
+  cwd: string,
+  extraEnv: NodeJS.ProcessEnv = {},
+): string {
+  const result = spawnSync(command, args, {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, ...extraEnv },
+  });
   if (result.status !== 0) {
     throw new Error(`${command} ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
   }
@@ -194,10 +217,20 @@ function run(command: string, args: string[], cwd: string): string {
 
 function parseNameStatus(output: string): ChangedFile[] {
   const changes: ChangedFile[] = [];
-  for (const line of output.split("\n")) {
-    if (!line.trim()) continue;
-    const parts = line.split("\t");
-    if (parts.length >= 2) changes.push({ status: parts[0], path: parts.slice(1).join("/") });
+  const tokens = output.split("\0");
+  let index = 0;
+  while (index < tokens.length) {
+    const status = tokens[index++];
+    if (!status) continue;
+    const firstPath = tokens[index++];
+    if (firstPath === undefined) break;
+    if (status.startsWith("R") || status.startsWith("C")) {
+      const secondPath = tokens[index++];
+      if (secondPath === undefined) break;
+      changes.push({ status, path: secondPath, old_path: firstPath });
+    } else {
+      changes.push({ status, path: firstPath });
+    }
   }
   return changes;
 }
@@ -258,29 +291,42 @@ function detectManipulation(
   };
 
   for (const change of changes) {
-    if (!matchesProtected(change.path, manifest.protected_files)) continue;
-    protected_violations.push(`${change.status} ${change.path}`);
+    const renamed = change.status.startsWith("R") || change.status.startsWith("C");
+    const paths = change.old_path
+      ? [{ path: change.old_path, removed: renamed }, { path: change.path, removed: false }]
+      : [{ path: change.path, removed: change.status.startsWith("D") }];
 
-    const baselinePath = path.join(baselineDir, change.path);
-    const candidatePath = path.join(tempDir, change.path);
+    for (const inspected of paths) {
+      if (!matchesProtected(inspected.path, manifest.protected_files)) continue;
+      const label = inspected.removed
+        ? `${change.status} ${inspected.path} -> ${change.path}`
+        : `${change.status} ${inspected.path}`;
+      if (!protected_violations.includes(label)) protected_violations.push(label);
 
-    if (change.status.startsWith("D")) {
-      if (change.path.startsWith("tests/")) manipulation.deleted_tests.push(change.path);
-      if (change.path.startsWith("ci/")) manipulation.disabled_ci.push(`${change.path}: deleted`);
-      continue;
-    }
-
-    const baseline = fs.existsSync(baselinePath) ? fs.readFileSync(baselinePath, "utf8") : "";
-    const candidate = fs.existsSync(candidatePath) ? fs.readFileSync(candidatePath, "utf8") : "";
-
-    if (change.path.startsWith("tests/")) {
-      for (const reason of weakenedAssertionReasons(baseline, candidate)) {
-        manipulation.weakened_assertions.push(`${change.path}: ${reason}`);
+      if (inspected.removed) {
+        if (inspected.path.startsWith("tests/")) {
+          manipulation.deleted_tests.push(inspected.path);
+        }
+        if (inspected.path.startsWith("ci/")) {
+          manipulation.disabled_ci.push(`${inspected.path}: deleted`);
+        }
+        continue;
       }
-    }
-    if (change.path.startsWith("ci/") || change.path.includes(".github/workflows")) {
-      for (const reason of disabledCiReasons(baseline, candidate)) {
-        manipulation.disabled_ci.push(`${change.path}: ${reason}`);
+
+      const baselinePath = path.join(baselineDir, inspected.path);
+      const candidatePath = path.join(tempDir, inspected.path);
+      const baseline = fs.existsSync(baselinePath) ? fs.readFileSync(baselinePath, "utf8") : "";
+      const candidate = fs.existsSync(candidatePath) ? fs.readFileSync(candidatePath, "utf8") : "";
+
+      if (inspected.path.startsWith("tests/")) {
+        for (const reason of weakenedAssertionReasons(baseline, candidate)) {
+          manipulation.weakened_assertions.push(`${inspected.path}: ${reason}`);
+        }
+      }
+      if (inspected.path.startsWith("ci/") || inspected.path.includes(".github/workflows")) {
+        for (const reason of disabledCiReasons(baseline, candidate)) {
+          manipulation.disabled_ci.push(`${inspected.path}: ${reason}`);
+        }
       }
     }
   }
@@ -358,15 +404,22 @@ export function verifyArtifact(options: VerifyOptions): VerificationReport {
     run("git", ["init", "-q"], repoDir);
     run("git", ["config", "user.email", "runner@caliper.local"], repoDir);
     run("git", ["config", "user.name", "CALIPER Runner"], repoDir);
+    run("git", ["config", "commit.gpgsign", "false"], repoDir);
     run("git", ["add", "-A"], repoDir);
-    run("git", ["commit", "-q", "-m", "pinned baseline"], repoDir);
+    run("git", ["commit", "-q", "-m", "pinned baseline"], repoDir, BASELINE_GIT_ENV);
+    const baselineCommit = run("git", ["rev-parse", "HEAD"], repoDir).trim();
+    if (baselineCommit !== manifest.baseline_commit) {
+      throw new Error(
+        `pinned baseline commit mismatch: runner produced ${baselineCommit}, policy pins ${manifest.baseline_commit}`,
+      );
+    }
 
     const actualDeliverableHash = hashTree(options.candidateDir);
     clearTreeExceptGit(repoDir);
     copyTree(options.candidateDir, repoDir);
     run("git", ["add", "-A"], repoDir);
 
-    const nameStatus = run("git", ["diff", "--cached", "--name-status", "HEAD"], repoDir);
+    const nameStatus = run("git", ["diff", "--cached", "--name-status", "-z", "HEAD"], repoDir);
     const diff = run(
       "git",
       ["diff", "--cached", "--no-color", "--no-ext-diff", "--binary", "--full-index", "HEAD"],
@@ -394,8 +447,6 @@ export function verifyArtifact(options: VerifyOptions): VerificationReport {
       clean &&
       testRun.exit_code === 0 &&
       ciRun.exit_code === 0;
-    const combinedExit =
-      testRun.exit_code === 0 ? ciRun.exit_code : testRun.exit_code;
 
     const passedChecks: string[] = [];
     if (deliverableMatchesClaim) passedChecks.push("artifact matches submitted hash");
@@ -413,8 +464,10 @@ export function verifyArtifact(options: VerifyOptions): VerificationReport {
         baseline_commit: manifest.baseline_commit,
         acceptance_suite_hash: pinnedSuiteHash,
         diff_hash: diffHash,
+        deliverable_matches_claim: deliverableMatchesClaim,
         protected_files_clean: clean,
-        test_exit_code: combinedExit,
+        test_exit_code: testRun.exit_code,
+        ci_exit_code: ciRun.exit_code,
         runner_version: RUNNER_VERSION,
         passed,
       },

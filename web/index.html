@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CALIPER — Verified labor market</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+    <header class="topbar">
+      <a class="brand" href="/">
+        <svg viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M4 9h9l3 5 3-5h9v4h-6l-4 6 4 6h6v4h-9l-3-5-3 5H4v-4h6l4-6-4-6H4z" />
+        </svg>
+        <span>CALIPER</span>
+      </a>
+      <div class="topbar-right">
+        <span class="chip muted" id="mode-chip">local simulation</span>
+        <button class="btn primary" id="run-btn">Run adversarial demo</button>
+        <button class="btn ghost" id="reset-btn">Reset</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <p class="eyebrow">Independent acceptance for agent-created code</p>
+        <h1>Payment is not a status update.</h1>
+        <p class="lede">
+          An autonomous worker can make its own CI green by weakening the tests. CALIPER
+          detects the manipulation, blocks payment, and releases funds only after a separate
+          verifier runs the pinned suite against the exact artifact.
+        </p>
+        <div class="hero-actions">
+          <button class="btn primary large" id="hero-run-btn">Watch the adversarial loop</button>
+          <a class="btn ghost large" href="#evidence">Inspect the evidence</a>
+        </div>
+        <p class="micro" id="hero-status">No run loaded. The demo is deterministic and runs offline.</p>
+      </section>
+
+      <section id="idle" class="panel idle">
+        <div class="idle-mark">CALIPER</div>
+        <h2>One worker bids lowest. It cannot buy acceptance.</h2>
+        <p>
+          Run the demo to watch five sealed bids, a deterministic selection, a tampered first
+          attempt, an independent rejection, a genuine correction, and callback-confirmed
+          settlement.
+        </p>
+      </section>
+
+      <div id="run-view" hidden>
+        <section class="verdict" id="verdict">
+          <div>
+            <p class="eyebrow" id="verdict-eyebrow">attempt 1</p>
+            <h2 id="verdict-title">CALIPER blocked the payment.</h2>
+            <p id="verdict-copy">
+              The worker reported success. The independent runner found protected acceptance
+              files changed and reran the pinned suite against the real source.
+            </p>
+          </div>
+          <div class="verdict-state">
+            <span class="status-dot"></span>
+            <span id="verdict-state">Payment blocked</span>
+          </div>
+        </section>
+
+        <section class="grid two">
+          <article class="panel">
+            <header class="panel-head">
+              <div>
+                <p class="eyebrow">Work round</p>
+                <h2>Pinned before work</h2>
+              </div>
+              <span class="chip" id="retry-chip">2 attempts</span>
+            </header>
+            <dl class="facts" id="task-facts"></dl>
+            <details class="raw">
+              <summary>Acceptance criteria</summary>
+              <pre id="criteria-text"></pre>
+            </details>
+          </article>
+
+          <article class="panel">
+            <header class="panel-head">
+              <div>
+                <p class="eyebrow">Market</p>
+                <h2>Sealed bids, public rules</h2>
+              </div>
+              <span class="chip good" id="winner-chip"></span>
+            </header>
+            <div class="table-wrap">
+              <table id="bids-table">
+                <thead>
+                  <tr><th>Worker</th><th>Commitment</th><th>Reveal</th><th class="num">Bid</th><th>State</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <p class="micro" id="market-note"></p>
+          </article>
+        </section>
+
+        <section class="grid three">
+          <article class="panel compact">
+            <p class="eyebrow">Roles</p>
+            <h2>Three separate identities</h2>
+            <ul class="role-list" id="role-list"></ul>
+            <p class="micro">Distinct authority nodes and distinct account holders. Local simulation labels are explicit.</p>
+          </article>
+
+          <article class="panel compact">
+            <p class="eyebrow">Authority</p>
+            <h2>Budget commitments</h2>
+            <div class="meter">
+              <div class="meter-row"><span>Root allocation</span><strong id="root-alloc"></strong></div>
+              <div class="bar"><span id="alloc-bar"></span></div>
+              <div class="meter-row"><span>Committed before job</span><strong id="committed-before"></strong></div>
+              <div class="meter-row"><span>Committed after job</span><strong id="committed-after"></strong></div>
+              <div class="meter-row"><span>Available after job</span><strong id="available-after"></strong></div>
+            </div>
+          </article>
+
+          <article class="panel compact">
+            <p class="eyebrow">Integrity</p>
+            <h2>Anchored evidence</h2>
+            <ul class="check-list" id="integrity-list"></ul>
+          </article>
+        </section>
+
+        <section id="evidence">
+          <header class="section-head">
+            <div>
+              <p class="eyebrow">Attempts</p>
+              <h2>Claimed success vs. computed evidence</h2>
+            </div>
+            <span class="chip warn">verify, don't trust</span>
+          </header>
+          <div id="attempts" class="attempts"></div>
+        </section>
+
+        <section class="grid two">
+          <article class="panel">
+            <header class="panel-head">
+              <div>
+                <p class="eyebrow">Settlement</p>
+                <h2>Callback-confirmed payment</h2>
+              </div>
+              <span class="chip good" id="payment-chip"></span>
+            </header>
+            <div class="pipeline" id="payment-pipeline"></div>
+            <dl class="facts" id="payment-facts"></dl>
+            <p class="micro" id="payment-note"></p>
+          </article>
+
+          <article class="panel">
+            <header class="panel-head">
+              <div>
+                <p class="eyebrow">Events</p>
+                <h2>Contract timeline</h2>
+              </div>
+            </header>
+            <ol class="event-list" id="event-list"></ol>
+          </article>
+        </section>
+      </div>
+
+      <section class="panel raw-panel" id="raw-panel" hidden>
+        <header class="panel-head">
+          <div>
+            <p class="eyebrow">Inspectable evidence</p>
+            <h2 id="raw-title">Verification report</h2>
+          </div>
+          <button class="btn ghost small" id="raw-close">Close</button>
+        </header>
+        <pre id="raw-json"></pre>
+      </section>
+    </main>
+
+    <footer>
+      <span>CALIPER</span>
+      <span>Local simulation. No on-chain transaction, transaction hash, or wallet signature is invented.</span>
+    </footer>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

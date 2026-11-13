@@ -1,73 +1,90 @@
 # CALIPER — Judge's shortest path
 
-CALIPER is independent acceptance for agent-created code with least-privilege delegation:
+**The claim:** a coding agent can make its CI green by weakening the tests. CALIPER detects
+that manipulation, blocks payment, and pays only after a separate verifier runs the pinned
+suite against the corrected source.
 
-- **Authority attenuation**: child permissions ⊆ parent permissions
-- **Commitment isolation**: spent + sum(children allocations) ≤ allocation  
-- **Branch revocation**: revoking invalidates descendants
-- **Independent verification**: job acceptance requires `tampering_detected == false` AND `independent_passed == true`
+## One command
+
+```bash
+npm run demo
+```
+
+From a clean checkout this runs five sealed bids, selects the adversarial worker, blocks its
+tampered first attempt, requests correction, verifies the genuine source fix, and confirms
+local settlement. It exits non-zero if the loop is broken.
+
+Expected key lines:
+
+```
+attempt 1: Rejected — blocked: protected acceptance files were modified
+  protected violations: M ci/check.js, M tests/auth.test.js
+  weakened assertions:  tests/auth.test.js: weakened an assertion to assert.ok(true)
+  disabled CI:          ci/check.js: forced the CI check to exit successfully
+attempt 2: Verified — passed: genuine source fix accepted by the pinned suite
+payment:   Paid (Local chain simulation ...)
+```
+
+## Watch the workbench
+
+```bash
+npm run serve
+# open http://127.0.0.1:4317
+```
+
+Click **Run adversarial demo**. The screen shows the task's pinned criteria, the bid
+transcript, role separation, budget commitments, the actual diff, the signed verifier
+evidence, the correction history, the approval gate, and the payment receipt. The first
+attempt's worker claim is shown next to the computed evidence that blocked it.
 
 ## What to check
 
-| Claim | How to verify | Command |
-|---|---|---|
-| The contract builds | `cargo build --release --target wasm32-unknown-unknown` produces `contract/target/wasm32-unknown-unknown/release/caliper.wasm` | see below |
-| 13 tests pass | All tests including proof-gated subcontracting, commitment isolation, attestation | see below |
-| Verifier accepts valid | exits 0, prints `VERIFIED` | see below |
-| Verifier rejects invalid | exits 1, names the violation | see below |
+| Claim | Command / evidence |
+|---|---|
+| 32 contract tests pass | `cd contract && cargo test` |
+| Contract compiles to wasm | `cd contract && cargo build --release --target wasm32-unknown-unknown` |
+| 14 off-chain tests pass | `npm run test:node` |
+| Exported-state auditor passes | `npm run verify` |
+| Adversarial loop works | `npm run demo` |
+| Tampering is detected, not trusted | `demo/runs/latest/attempt-1-report.json` |
+| Correction passes the original suite | `demo/runs/latest/attempt-2-report.json` |
+| Market transcript is anchored | `integrity.market_transcript_anchored` in `run.json` |
+| Payment waits for callback | `payment.status = PaymentPending`, then `payment.state = Paid` |
 
-## Step-by-step (no network, no wallet, no testnet needed)
+## The failure scenario to inspect
 
-```bash
-cd contract
+1. Eve wins the market with the lowest valid bid.
+2. Eve submits a patch that weakens `tests/auth.test.js` and disables `ci/check.js`.
+3. Eve's own claim says success.
+4. The runner computes the real diff, detects protected-file changes, restores the pinned
+   suite, and reruns it against Eve's actual source.
+5. Verification fails. The coordinator cannot accept. Payment is blocked.
+6. The coordinator requests changes. The same worker remains assigned.
+7. Eve fixes `src/auth.js`.
+8. The runner executes the original pinned test and CI files.
+9. Verification passes. The coordinator approves. The local chain settles via callback.
 
-# 1. Build the contract
-cargo build --release --target wasm32-unknown-unknown
-ls target/wasm32-unknown-unknown/release/caliper.wasm   # ~286 KB
+## What is real and what is simulated
 
-# 2. Run the tests (13 tests)
-cargo test
-# expect: test result: ok. 13 passed; 0 failed
+- The NEAR contract, canonical attestation, Ed25519 signing, diff computation, protected-file
+  checks, test execution, and payment state machine are real code.
+- The demo uses local simulation identities and a local chain mirror. No on-chain transaction,
+  transaction hash, wallet signature, or testnet deployment is invented.
+- The UI labels this explicitly. Testnet deployment is documented in `README.md` and requires
+  credentials that are not committed.
 
-# 3. Run the independent verifier
-npx tsx verify/verify.ts verify/sample-valid.json
-# expect: VERIFIED ... (exit 0)
-echo $?   # 0
+## Why this is not a generic marketplace
 
-npx tsx verify/verify.ts verify/sample-invalid-attenuation.json
-# expect: FAILED ... [attenuation] ... (exit 1)
-echo $?   # 1
+Bidding is for verified agent labor. Payment is gated by artifact-bound independent evidence,
+not reputation, pooled purchases, or a chat interface. The swarm is five deterministic workers
+with sealed bids; the point is the verification-and-settlement loop, not agent theatre.
 
-npx tsx verify/verify.ts verify/sample-invalid-commitment.json
-# expect: FAILED ... [commitment] ... (exit 1)
-echo $?   # 1
-```
+## Trust boundary in one sentence
 
-## The 13 unit tests
-
-- `create_root_and_delegate` — authority attenuation + commitment isolation
-- `delegate_attenuation_enforced` — child cannot get max_per_tx above parent's
-- `spend_within_allocation_succeeds` — worker spends inside its allocation
-- `spend_to_unauthorized_recipient_rejected` — deny-by-default recipient list
-- `commitment_isolation_coordinator_cannot_spend_promised_funds` — signature demo: 0.60 + 0.20 committed, 0.80 attempt rejected
-- `revoked_node_spend_is_rejected` — a revoked branch cannot execute
-- `revoke_child_releases_parent_commitment` — revoking a child releases budget back up
-- `revoke_root_invalidates_whole_branch_transitively` — revoking root invalidates all descendants
-- `nested_revocation_releases_correct_commitments` — revoking interior node releases only that node's allocation
-- `proof_gated_subcontracting_tampering_detected` — worker modifies protected files → tampering detected → acceptance blocked
-- `proof_gated_subcontracting_clean_then_accepted` — clean deliverable → independent verification pass → coordinator accepts → payment
-- `proof_gated_subcontracting_independent_verification_fails` — verification fails → acceptance blocked
-- `create_root_twice_panics` — only one root allowed
-
-## What the verifier checks
-
-`verify/verify.ts` reconstructs the authority tree from exported contract state and verifies:
-
-1. **Authority attenuation** — every child's recipients, assets, max_per_tx, may_delegate ⊆ parent's
-2. **Commitment isolation** — spent + sum(children allocations) ≤ allocation per node
-3. **Branch revocation** — revoked nodes and their descendants are inactive
-4. **Node ordering** — `created_at` timestamps enforce proper causality
+The contract does not execute code or prove correctness; it enforces that the designated
+verifier signed evidence bound to the current job, attempt, artifact, criteria, baseline,
+suite, and pinned key, and that no payment is marked complete before the transfer callback.
 
 ## Deadline
 
-November 14 at 23:59 UTC.
+November 14, 2026 at 23:59 UTC.

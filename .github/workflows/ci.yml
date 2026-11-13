@@ -17,6 +17,11 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
       - name: Build contract (wasm)
         working-directory: contract
         run: cargo build --release --target wasm32-unknown-unknown
@@ -25,16 +30,31 @@ jobs:
         working-directory: contract
         run: cargo test
 
-      - name: Run independent verifier on valid fixture
-        working-directory: contract
-        run: npx tsx verify/verify.ts verify/sample-valid.json
-
-      - name: Run independent verifier rejects invalid fixtures
-        working-directory: contract
+      - name: Verify exported-state fixtures
         run: |
+          node contract/verify/verify.ts contract/verify/sample-valid.json
+          node contract/verify/verify.ts contract/verify/sample-valid-job.json
           set +e
-          npx tsx verify/verify.ts verify/sample-invalid-attenuation.json >/dev/null 2>&1
+          node contract/verify/verify.ts contract/verify/sample-invalid-attenuation.json >/dev/null 2>&1
           if [ $? -eq 0 ]; then echo "ERROR: attenuation fixture should fail"; exit 1; fi
-          npx tsx verify/verify.ts verify/sample-invalid-commitment.json >/dev/null 2>&1
+          node contract/verify/verify.ts contract/verify/sample-invalid-commitment.json >/dev/null 2>&1
           if [ $? -eq 0 ]; then echo "ERROR: commitment fixture should fail"; exit 1; fi
-          echo "Both invalid fixtures correctly rejected"
+          echo "Invalid fixtures correctly rejected"
+
+      - name: Run runner, market, and end-to-end tests
+        run: node --test demo/runner.test.ts demo/market.test.ts demo/e2e.test.ts
+
+      - name: Run complete adversarial demonstration
+        run: node demo/cli.ts
+
+      - name: Smoke-test the workbench API
+        run: |
+          node demo/server.ts > /tmp/caliper-server.log 2>&1 &
+          SERVER_PID=$!
+          trap "kill $SERVER_PID" EXIT
+          for i in $(seq 1 20); do
+            if curl -sf http://127.0.0.1:4317/api/state >/dev/null; then break; fi
+            sleep 0.5
+          done
+          curl -sf -X POST http://127.0.0.1:4317/api/run > /tmp/caliper-run.json
+          node -e 'const r=require("/tmp/caliper-run.json"); if (r.payment.state!=="Paid" || r.attempts[0].chain_status!=="Rejected") process.exit(1)'

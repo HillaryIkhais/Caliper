@@ -2,3 +2,6 @@
 /Cargo.lock
 /.vscode
 .DS_Store
+/demo/runs
+/.caliper
+node_modules

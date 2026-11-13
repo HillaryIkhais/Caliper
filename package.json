@@ -1,0 +1,18 @@
+{
+  "name": "caliper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Verified labor market for autonomous agents with independent acceptance and NEAR settlement.",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "demo": "node demo/cli.ts",
+    "serve": "node demo/server.ts",
+    "test": "npm run test:contract && npm run test:node",
+    "test:contract": "cd contract && cargo test",
+    "test:node": "node --test demo/runner.test.ts demo/market.test.ts demo/e2e.test.ts",
+    "verify": "node contract/verify/verify.ts contract/verify/sample-valid.json && node contract/verify/verify.ts contract/verify/sample-valid-job.json"
+  }
+}

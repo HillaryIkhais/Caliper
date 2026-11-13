@@ -1,0 +1,204 @@
+{
+  "root": 1,
+  "owner": "owner.caliper.local",
+  "nodes": {
+    "1": {
+      "id": 1,
+      "parent": null,
+      "holder": "coordinator.caliper.local",
+      "permissions": {
+        "recipients": [
+          "vendor.caliper.local"
+        ],
+        "assets": [],
+        "max_per_tx": "100000000000000000000000000",
+        "may_delegate": true
+      },
+      "allocation": "100000000000000000000000000",
+      "spent": "20000000000000000000000000",
+      "committed_to_children": "50000000000000000000000000",
+      "active": true,
+      "children": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "created_at": 1
+    },
+    "2": {
+      "id": 2,
+      "parent": 1,
+      "holder": "worker-ada.local",
+      "permissions": {
+        "recipients": [
+          "vendor.caliper.local"
+        ],
+        "assets": [],
+        "max_per_tx": "8000000000000000000000000",
+        "may_delegate": true
+      },
+      "allocation": "8000000000000000000000000",
+      "spent": "0",
+      "committed_to_children": "0",
+      "active": true,
+      "children": [],
+      "created_at": 2
+    },
+    "3": {
+      "id": 3,
+      "parent": 1,
+      "holder": "worker-bruno.local",
+      "permissions": {
+        "recipients": [
+          "vendor.caliper.local"
+        ],
+        "assets": [],
+        "max_per_tx": "8000000000000000000000000",
+        "may_delegate": true
+      },
+      "allocation": "8000000000000000000000000",
+      "spent": "0",
+      "committed_to_children": "0",
+      "active": true,
+      "children": [],
+      "created_at": 3
+    },
+    "4": {
+      "id": 4,
+      "parent": 1,
+      "holder": "worker-chen.local",
+      "permissions": {
+        "recipients": [
+          "vendor.caliper.local"
+        ],
+        "assets": [],
+        "max_per_tx": "8000000000000000000000000",
+        "may_delegate": true
+      },
+      "allocation": "8000000000000000000000000",
+      "spent": "0",
+      "committed_to_children": "0",
+      "active": true,
+      "children": [],
+      "created_at": 4
+    },
+    "5": {
+      "id": 5,
+      "parent": 1,
+      "holder": "worker-dara.local",
+      "permissions": {
+        "recipients": [
+          "vendor.caliper.local"
+        ],
+        "assets": [],
+        "max_per_tx": "8000000000000000000000000",
+        "may_delegate": true
+      },
+      "allocation": "8000000000000000000000000",
+      "spent": "0",
+      "committed_to_children": "0",
+      "active": true,
+      "children": [],
+      "created_at": 5
+    },
+    "6": {
+      "id": 6,
+      "parent": 1,
+      "holder": "worker-eve.local",
+      "permissions": {
+        "recipients": [
+          "vendor.caliper.local"
+        ],
+        "assets": [],
+        "max_per_tx": "8000000000000000000000000",
+        "may_delegate": true
+      },
+      "allocation": "8000000000000000000000000",
+      "spent": "0",
+      "committed_to_children": "0",
+      "active": true,
+      "children": [],
+      "created_at": 6
+    },
+    "7": {
+      "id": 7,
+      "parent": 1,
+      "holder": "verifier.caliper.local",
+      "permissions": {
+        "recipients": [
+          "vendor.caliper.local"
+        ],
+        "assets": [],
+        "max_per_tx": "10000000000000000000000000",
+        "may_delegate": true
+      },
+      "allocation": "10000000000000000000000000",
+      "spent": "0",
+      "committed_to_children": "0",
+      "active": true,
+      "children": [],
+      "created_at": 7
+    }
+  },
+  "executions": [],
+  "revocations": [],
+  "jobs": [
+    {
+      "id": 1,
+      "coordinator_node": 1,
+      "worker_node": 6,
+      "verifier_node": 7,
+      "coordinator_holder": "coordinator.caliper.local",
+      "worker_holder": "worker-eve.local",
+      "verifier_holder": "verifier.caliper.local",
+      "verifier_public_key": "1dfb543aac40cdf79702943bb3bb6dce08d4bb0403e9b9cf7b73e533325d1da3",
+      "budget": "20000000000000000000000000",
+      "acceptance_criteria_hash": "sha256:3a36a72405527cd56c39c8b8e3e24bb909851188239b5c70b1a223144efef4bf",
+      "acceptance_suite_hash": "sha256:b209c50f7886c7de86f4a8cf8443871036f66b2db9b6dcfedcac72af911d3dbe",
+      "baseline_commit": "fixture-baseline-v1",
+      "market_transcript_hash": "sha256:9649cdcadf53af6cd2947058bef28495d82875d58f333e6ff7e0874fd0183ee3",
+      "protected_files": [
+        "tests/**",
+        "ci/**"
+      ],
+      "deliverable_hash": "sha256:1422550dad99098317100177a4ec6ffa140c81b7badd6abf5622a6624acb283b",
+      "attempt": 2,
+      "max_attempts": 2,
+      "modified_files_hash": "sha256:77a0fed7bac2bb698540d213a3220699cfa7b9192f47d3e815d5b55891543a8c",
+      "tampering_detected": false,
+      "independent_report_hash": "sha256:192f32229f384e6b5c215abbe3e80b5f13cb379c0fce20020773ee7ae48baed5",
+      "independent_passed": true,
+      "test_exit_code": 0,
+      "verification": {
+        "attestation": {
+          "version": "caliper-attestation-v1",
+          "job_id": 1,
+          "attempt": 2,
+          "deliverable_hash": "sha256:1422550dad99098317100177a4ec6ffa140c81b7badd6abf5622a6624acb283b",
+          "acceptance_criteria_hash": "sha256:3a36a72405527cd56c39c8b8e3e24bb909851188239b5c70b1a223144efef4bf",
+          "baseline_commit": "fixture-baseline-v1",
+          "acceptance_suite_hash": "sha256:b209c50f7886c7de86f4a8cf8443871036f66b2db9b6dcfedcac72af911d3dbe",
+          "diff_hash": "sha256:77a0fed7bac2bb698540d213a3220699cfa7b9192f47d3e815d5b55891543a8c",
+          "protected_files_clean": true,
+          "test_exit_code": 0,
+          "runner_version": "caliper-runner-v1",
+          "passed": true,
+          "report_digest": "sha256:192f32229f384e6b5c215abbe3e80b5f13cb379c0fce20020773ee7ae48baed5",
+          "verifier_public_key": "1dfb543aac40cdf79702943bb3bb6dce08d4bb0403e9b9cf7b73e533325d1da3",
+          "signature": "890c3be6cff0e239b342d4f38fc63ef1983d7d4f8f766a6ab04e87a8c3b6aabaa148fc3695f6c7df60c4ca9f79cd4b644a4f423c516aaf8b22d3817369f3c70a"
+        },
+        "recorded_at": 12
+      },
+      "status": "Paid",
+      "payment_error": null,
+      "created_at": 8,
+      "submitted_at": 11,
+      "verified_at": 12,
+      "resolved_at": 13,
+      "paid_at": 13
+    }
+  ]
+}

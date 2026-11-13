@@ -1,0 +1,22 @@
+{
+  "attestation": {
+    "version": "caliper-attestation-v1",
+    "job_id": 42,
+    "attempt": 1,
+    "deliverable_hash": "sha256:artifact-demo",
+    "acceptance_criteria_hash": "sha256:criteria-demo",
+    "baseline_commit": "commit-demo-baseline",
+    "acceptance_suite_hash": "sha256:suite-demo",
+    "diff_hash": "sha256:diff-demo",
+    "protected_files_clean": true,
+    "test_exit_code": 0,
+    "runner_version": "caliper-runner-v1",
+    "passed": true,
+    "verifier_public_key": "9c16937bf04cce709fed52344c43634f1e7a05fc29dd41f48844c3588c7fe663"
+  },
+  "expected": {
+    "body": "caliper-attestation-v1|42|1|sha256:artifact-demo|sha256:criteria-demo|commit-demo-baseline|sha256:suite-demo|sha256:diff-demo|1|0|caliper-runner-v1|1",
+    "report_digest": "sha256:71a1d422e685fed7f7215f34a7375b467145ef138dce15c4deb03baf3598a0ce",
+    "message": "caliper-attestation-v1|42|1|sha256:artifact-demo|sha256:criteria-demo|commit-demo-baseline|sha256:suite-demo|sha256:diff-demo|1|0|caliper-runner-v1|1|sha256:71a1d422e685fed7f7215f34a7375b467145ef138dce15c4deb03baf3598a0ce|9c16937bf04cce709fed52344c43634f1e7a05fc29dd41f48844c3588c7fe663"
+  }
+}

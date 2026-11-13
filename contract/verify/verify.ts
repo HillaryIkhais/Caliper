@@ -40,6 +40,7 @@ interface Node {
     expiry: number | null;
     active: boolean;
     children: AuthorityId[];
+    created_at: number;
 }
 
 interface Execution {
@@ -62,19 +63,52 @@ interface Job {
     id: JobId;
     coordinator_node: AuthorityId;
     worker_node: AuthorityId;
-    verifier_node: AuthorityId | null;
+    verifier_node: AuthorityId;
+    coordinator_holder: AccountId;
+    worker_holder: AccountId;
+    verifier_holder: AccountId;
+    verifier_public_key: string;
     budget: Balance;
     acceptance_criteria_hash: string;
+    acceptance_suite_hash: string;
+    baseline_commit: string;
+    market_transcript_hash: string;
     protected_files: string[];
     deliverable_hash: string | null;
-    modified_files: string[] | null;
+    attempt: number;
+    max_attempts: number;
+    modified_files_hash: string | null;
     tampering_detected: boolean;
     independent_report_hash: string | null;
     independent_passed: boolean | null;
-    status: string; // "Open" | "Submitted" | "Accepted" | "Rejected" | "Cancelled"
+    test_exit_code: number | null;
+    verification: {
+        attestation: {
+            version: string;
+            job_id: JobId;
+            attempt: number;
+            deliverable_hash: string;
+            acceptance_criteria_hash: string;
+            baseline_commit: string;
+            acceptance_suite_hash: string;
+            diff_hash: string;
+            protected_files_clean: boolean;
+            test_exit_code: number;
+            runner_version: string;
+            passed: boolean;
+            report_digest: string;
+            verifier_public_key: string;
+            signature: string;
+        };
+        recorded_at: number;
+    } | null;
+    status: string; // "Open" | "Submitted" | "Verified" | "PaymentPending" | "Paid" | "PaymentFailed" | "Rejected" | "Exhausted" | "Cancelled"
+    payment_error: string | null;
     created_at: number;
     submitted_at: number | null;
+    verified_at: number | null;
     resolved_at: number | null;
+    paid_at: number | null;
 }
 
 interface State {
@@ -228,63 +262,133 @@ function verify(state: State, currentBlock: number | null) {
         }
     }
 
-    // 4b. Job verification: every job's status changes are valid and authorized
+    // 4b. Job verification: every job's roles, evidence, and payment state are valid.
     for (const job of state.jobs) {
-        const jobNode = nodesById.get(job.id);
-        
-        // Coordinator must exist and be valid at job creation
         const coordinator = nodesById.get(job.coordinator_node);
+        const worker = nodesById.get(job.worker_node);
+        const verifier = nodesById.get(job.verifier_node);
+
         if (!coordinator) {
             fail("job", `job ${job.id} has unknown coordinator node ${job.coordinator_node}`, job.coordinator_node, undefined, job.id);
+            continue;
         }
-        
-        // Worker must exist and be descendant of coordinator
-        const worker = nodesById.get(job.worker_node);
         if (!worker) {
             fail("job", `job ${job.id} has unknown worker node ${job.worker_node}`, job.worker_node, undefined, job.id);
         }
-        if (job.coordinator_node !== root && !isDescendant(nodesById, job.worker_node, job.coordinator_node)) {
+        if (!verifier) {
+            fail("job", `job ${job.id} has unknown verifier node ${job.verifier_node}`, job.verifier_node, undefined, job.id);
+        }
+
+        // Role separation: distinct node ids and distinct account holders.
+        if (job.coordinator_node === job.worker_node || job.coordinator_node === job.verifier_node) {
+            fail("job", `job ${job.id} reuses the coordinator node for another role`, undefined, undefined, job.id);
+        }
+        if (job.worker_node === job.verifier_node) {
+            fail("job", `job ${job.id} reuses the worker node as verifier`, undefined, undefined, job.id);
+        }
+        const holders = [job.coordinator_holder, job.worker_holder, job.verifier_holder];
+        if (new Set(holders).size !== 3) {
+            fail("job", `job ${job.id} does not have three distinct account holders`, undefined, undefined, job.id);
+        }
+        if (coordinator && coordinator.holder !== job.coordinator_holder) {
+            fail("job", `job ${job.id} coordinator holder does not match node`, job.coordinator_node, undefined, job.id);
+        }
+        if (worker && worker.holder !== job.worker_holder) {
+            fail("job", `job ${job.id} worker holder does not match node`, job.worker_node, undefined, job.id);
+        }
+        if (verifier && verifier.holder !== job.verifier_holder) {
+            fail("job", `job ${job.id} verifier holder does not match node`, job.verifier_node, undefined, job.id);
+        }
+
+        // Worker and verifier must hold authority beneath the coordinator's branch.
+        if (!isDescendant(nodesById, job.worker_node, job.coordinator_node)) {
             fail("job", `job ${job.id} worker is not a descendant of coordinator`, job.worker_node, undefined, job.id);
         }
-        
-        // Verifier must be a descendant of coordinator if specified
-        if (job.verifier_node != null) {
-            const verifier = nodesById.get(job.verifier_node);
-            if (!verifier) {
-                fail("job", `job ${job.id} has unknown verifier node ${job.verifier_node}`, job.verifier_node, undefined, job.id);
-            } else if (job.coordinator_node !== root && !isDescendant(nodesById, job.verifier_node, job.coordinator_node)) {
-                fail("job", `job ${job.id} verifier is not a descendant of coordinator`, job.verifier_node, undefined, job.id);
-            }
+        if (!isDescendant(nodesById, job.verifier_node, job.coordinator_node)) {
+            fail("job", `job ${job.id} verifier is not a descendant of coordinator`, job.verifier_node, undefined, job.id);
+        }
+
+        // Pinned evidence must exist.
+        for (const [label, value] of Object.entries({
+            acceptance_criteria_hash: job.acceptance_criteria_hash,
+            acceptance_suite_hash: job.acceptance_suite_hash,
+            baseline_commit: job.baseline_commit,
+            market_transcript_hash: job.market_transcript_hash,
+            verifier_public_key: job.verifier_public_key,
+        })) {
+            if (!value) fail("job", `job ${job.id} missing pinned ${label}`, undefined, undefined, job.id);
+        }
+        if (!/^[0-9a-f]{64}$/.test(job.verifier_public_key)) {
+            fail("job", `job ${job.id} verifier public key is not 32-byte hex`, undefined, undefined, job.id);
+        }
+        if (job.attempt < 0 || job.attempt > job.max_attempts) {
+            fail("job", `job ${job.id} attempt ${job.attempt} exceeds max ${job.max_attempts}`, undefined, undefined, job.id);
         }
 
         // Job creation time ordering
-        if (job.created_at < coordinator.created_at || job.created_at < worker.created_at) {
+        if (job.created_at < coordinator.created_at || (worker && job.created_at < worker.created_at)) {
             fail("job", `job ${job.id} created before its nodes existed`, undefined, undefined, job.id);
         }
-
-        // Submission time must be after creation
         if (job.submitted_at != null && job.submitted_at < job.created_at) {
             fail("job", `job ${job.id} submitted before creation`, undefined, undefined, job.id);
         }
-
-        // Resolved time must be after submission if set
         if (job.resolved_at != null && job.submitted_at != null && job.resolved_at < job.submitted_at) {
             fail("job", `job ${job.id} resolved before submission`, undefined, undefined, job.id);
         }
 
-        // Accepted jobs must have passed independent verification and no tampering
-        if (job.status === "Accepted") {
-            if (job.independent_passed !== true) {
-                fail("job", `job ${job.id} is Accepted but independent_passed is not true`, undefined, undefined, job.id);
+        // Any stored verification must be bound to the current attempt and artifact.
+        if (job.verification != null) {
+            const a = job.verification.attestation;
+            if (a.job_id !== job.id) {
+                fail("job", `job ${job.id} stores an attestation for job ${a.job_id}`, undefined, undefined, job.id);
             }
-            if (job.tampering_detected) {
-                fail("job", `job ${job.id} is Accepted but tampering was detected`, undefined, undefined, job.id);
+            if (a.attempt !== job.attempt) {
+                fail("job", `job ${job.id} stores an attestation for attempt ${a.attempt}, current attempt is ${job.attempt}`, undefined, undefined, job.id);
+            }
+            if (a.deliverable_hash !== job.deliverable_hash) {
+                fail("job", `job ${job.id} attestation is not bound to the current deliverable`, undefined, undefined, job.id);
+            }
+            if (a.acceptance_criteria_hash !== job.acceptance_criteria_hash) {
+                fail("job", `job ${job.id} attestation uses different acceptance criteria`, undefined, undefined, job.id);
+            }
+            if (a.baseline_commit !== job.baseline_commit) {
+                fail("job", `job ${job.id} attestation uses a different baseline`, undefined, undefined, job.id);
+            }
+            if (a.acceptance_suite_hash !== job.acceptance_suite_hash) {
+                fail("job", `job ${job.id} attestation uses a different acceptance suite`, undefined, undefined, job.id);
+            }
+            if (a.verifier_public_key !== job.verifier_public_key) {
+                fail("job", `job ${job.id} attestation uses a different verifier key`, undefined, undefined, job.id);
+            }
+            if (a.passed !== (a.protected_files_clean && a.test_exit_code === 0)) {
+                fail("job", `job ${job.id} attestation outcome is inconsistent`, undefined, undefined, job.id);
+            }
+            if (a.passed !== job.independent_passed || a.report_digest !== job.independent_report_hash) {
+                fail("job", `job ${job.id} convenience fields disagree with the stored attestation`, undefined, undefined, job.id);
             }
         }
 
-        // Submitted jobs can not be Accepted without verification
-        if (job.status === "Accepted" && job.independent_passed === null) {
-            fail("job", `job ${job.id} is Accepted but no independent_passed value`, undefined, undefined, job.id);
+        const requiresVerification = ["Verified", "PaymentPending", "Paid"].includes(job.status);
+        if (requiresVerification) {
+            if (job.independent_passed !== true) {
+                fail("job", `job ${job.id} is ${job.status} but independent_passed is not true`, undefined, undefined, job.id);
+            }
+            if (job.tampering_detected) {
+                fail("job", `job ${job.id} is ${job.status} but tampering was detected`, undefined, undefined, job.id);
+            }
+            if (job.verification == null) {
+                fail("job", `job ${job.id} is ${job.status} but has no signed attestation`, undefined, undefined, job.id);
+            }
+            if (job.paid_at != null && job.status !== "Paid") {
+                fail("job", `job ${job.id} has paid_at set but status is ${job.status}`, undefined, undefined, job.id);
+            }
+        }
+
+        if (job.status === "Paid" && job.paid_at == null) {
+            fail("job", `job ${job.id} is Paid but has no paid_at block`, undefined, undefined, job.id);
+        }
+        if (["Rejected", "Exhausted"].includes(job.status) && job.independent_passed === true) {
+            fail("job", `job ${job.id} is ${job.status} with a successful verification`, undefined, undefined, job.id);
         }
     }
 

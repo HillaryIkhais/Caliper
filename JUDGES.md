@@ -10,7 +10,7 @@ suite against the corrected source.
 npm run demo
 ```
 
-From a clean checkout this runs five sealed bids, selects the adversarial worker, blocks its
+From a clean checkout this runs five deterministic commit/reveal bids, selects the adversarial worker, blocks its
 tampered first attempt, requests correction, verifies the genuine source fix, and confirms
 local settlement. It exits non-zero if the loop is broken.
 
@@ -43,12 +43,13 @@ attempt's worker claim is shown next to the computed evidence that blocked it.
 |---|---|
 | 32 contract tests pass | `cd contract && cargo test` |
 | Contract compiles to wasm | `cd contract && cargo build --release --target wasm32-unknown-unknown` |
-| 14 off-chain tests pass | `npm run test:node` |
+| 16 off-chain tests pass | `npm run test:node` |
 | Exported-state auditor passes | `npm run verify` |
 | Adversarial loop works | `npm run demo` |
 | Tampering is detected, not trusted | `demo/runs/latest/attempt-1-report.json` |
 | Correction passes the original suite | `demo/runs/latest/attempt-2-report.json` |
-| Market transcript is anchored | `integrity.market_transcript_anchored` in `run.json` |
+| Policy hash is recomputed before signing | `demo/runner.ts` aborts on a mismatch |
+| Market transcript hash matches the job | `integrity.market_transcript_hash_matches_job` in `run.json` |
 | Payment waits for callback | `payment.status = PaymentPending`, then `payment.state = Paid` |
 
 ## The failure scenario to inspect
@@ -66,8 +67,15 @@ attempt's worker claim is shown next to the computed evidence that blocked it.
 
 ## What is real and what is simulated
 
-- The NEAR contract, canonical attestation, Ed25519 signing, diff computation, protected-file
-  checks, test execution, and payment state machine are real code.
+- The NEAR contract, canonical attestation, Ed25519 signing, diff computation,
+  policy-hash recomputation, protected-file checks, test execution, and payment state machine
+  are real code.
+- The runner executes the controlled fixture on the host with a sanitized environment and a
+  timeout. There is no OS sandbox or network isolation, so it makes no claim about safely
+  executing arbitrary third-party repositories.
+- Bid nonces are deterministic for reproducibility. The market demonstrates commit/reveal
+  mechanics; it is not a private or trustless sealed-bid auction. The contract records the
+  supplied transcript hash but does not validate the auction or prove the winner.
 - The demo uses local simulation identities and a local chain mirror. No on-chain transaction,
   transaction hash, wallet signature, or testnet deployment is invented.
 - The UI labels this explicitly. Testnet deployment is documented in `README.md` and requires
@@ -77,13 +85,13 @@ attempt's worker claim is shown next to the computed evidence that blocked it.
 
 Bidding is for verified agent labor. Payment is gated by artifact-bound independent evidence,
 not reputation, pooled purchases, or a chat interface. The swarm is five deterministic workers
-with sealed bids; the point is the verification-and-settlement loop, not agent theatre.
+with deterministic commit/reveal bids; the point is the verification-and-settlement loop, not agent theatre.
 
 ## Trust boundary in one sentence
 
 The contract does not execute code or prove correctness; it enforces that the designated
 verifier signed evidence bound to the current job, attempt, artifact, criteria, baseline,
-suite, and pinned key, and that no payment is marked complete before the transfer callback.
+acceptance policy, and pinned key, and that no payment is marked complete before the transfer callback.
 
 ## Deadline
 

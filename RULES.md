@@ -35,9 +35,9 @@ Owner
   |
   | create_root / delegate / fund
   v
-Coordinator  ---- posts task, pins criteria, protected files, baseline, suite hash ---->  Work round
+Coordinator  ---- posts task, pins criteria, protected files, baseline, policy hash ---->  Work round
   |
-  | sealed commitments + reveals
+  | bid commitments + reveals
   v
 Worker market (5 deterministic workers)
   |
@@ -69,7 +69,7 @@ NEAR escrow: PaymentPending
 
 1. A coordinator opens a work round with a task specification, maximum budget,
    required capabilities, and deadline.
-2. Each eligible worker submits one sealed bid commitment.
+2. Each eligible worker submits one bid commitment.
 3. A commitment is the hash of a versioned canonical payload containing the round ID,
    worker account ID, bid amount, and nonce.
 4. Workers reveal only after the commitment phase closes.
@@ -79,21 +79,25 @@ NEAR escrow: PaymentPending
    worker account ID.
 7. A canonical market transcript records every commitment, reveal, invalid bid, the
    selection rule, and the winner.
-8. The transcript hash is anchored in the resulting on-chain job so the selected worker
-   recorded on-chain can be compared with the market evidence.
+8. The transcript hash supplied by the local market is recorded in the job. This is an
+   anchor, not proof: the contract can compare the hash, but it does not independently
+   validate the transcript or prove that the selected worker won an auction.
+9. The local simulation derives nonces deterministically for reproducibility. It is not a
+   private or trustless sealed-bid market, and its guarantees should not be described that
+   way.
 
 Bidding is for verified agent labor. It is not a pooled GPU purchase or a generic goods
 market.
 
 ## 4. Acceptance rules
 
-- Acceptance criteria, baseline commit, acceptance-suite hash, protected files, and the
+- Acceptance criteria, baseline commit, acceptance-policy hash, protected files, and the
   verifier public key are fixed at job creation.
 - The worker cannot change the acceptance suite or protected files.
 - The verifier must be a distinct identity from the worker and coordinator.
 - The verifier evaluates the exact current artifact and current attempt number.
 - An attestation binds: job ID, attempt number, deliverable hash, acceptance-criteria
-  hash, baseline commit, suite hash, actual diff hash, protected-file result, test exit
+  hash, baseline commit, acceptance-policy hash, actual diff hash, protected-file result, test exit
   code, runner version, and pass/fail outcome.
 - The attestation is signed with Ed25519 by the verifier key pinned at job creation.
   The canonical message and digest are identical in Rust and TypeScript.
@@ -129,3 +133,12 @@ off-chain runner performs the actual test execution and diff computation. The co
 does not execute arbitrary code and does not mathematically prove software correctness.
 It does enforce that the evidence presented for payment is bound to the current job,
 attempt, artifact, criteria, baseline, suite, verifier key, and a valid signature.
+
+The `acceptance_suite_hash` field pins the complete policy: the manifest, acceptance criteria,
+baseline identity, test and CI commands, protected paths, and protected file contents. The
+runner recomputes this policy before signing and refuses to attest on a mismatch.
+
+Execution boundary: the runner copies the candidate into a temporary directory, sanitizes the
+environment, and applies a timeout. It does not provide an OS sandbox, filesystem jail, or
+network isolation. It is limited to the controlled fixture and does not safely execute
+arbitrary untrusted repositories.

@@ -323,7 +323,7 @@ export class LocalCaliperChain {
     coordinator.committed_to_children = (
       BigInt(coordinator.committed_to_children) + BigInt(input.budget)
     ).toString();
-    this.log("create_job", `job ${id} anchored with market transcript ${input.market_transcript_hash}`);
+    this.log("create_job", `job ${id} recorded supplied market transcript hash ${input.market_transcript_hash}`);
     return id;
   }
 

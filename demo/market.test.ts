@@ -10,6 +10,8 @@ import {
 
 test("market rejects duplicate commitments", () => {
   const round = buildMarketRound();
+  assert.equal(round.sealed, false);
+  assert.match(round.note, /not a private or trustless sealed-bid auction/);
   assert.equal(round.duplicate_commitments.length, 1);
   assert.equal(round.duplicate_commitments[0].reason.includes("duplicate"), true);
   const workerCommitments = round.commitments.map((entry) => entry.worker);

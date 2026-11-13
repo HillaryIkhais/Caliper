@@ -2,6 +2,7 @@ import { sha256Hex, sha256Prefixed } from "../shared/attestation.ts";
 import { hashCanonical } from "../shared/canonical.ts";
 
 export const BID_VERSION = "caliper-bid-v1";
+export const MARKET_MODE = "deterministic-commit-reveal-simulation";
 export const NEAR = 10n ** 24n;
 
 export interface WorkerAgent {
@@ -62,6 +63,10 @@ export interface BidReveal {
 
 export interface MarketRound {
   version: string;
+  mode: string;
+  sealed: boolean;
+  nonce_source: string;
+  note: string;
   round_id: string;
   task: string;
   max_budget: string;
@@ -89,6 +94,8 @@ export function formatNear(yocto: string): string {
 }
 
 export function bidNonce(roundId: string, worker: string): string {
+  // Deterministic by design so the demonstration transcript is reproducible.
+  // This is not a private nonce and must not be described as a trustless sealed bid.
   return sha256Hex(`${roundId}:${worker}:nonce`).slice(0, 32);
 }
 
@@ -173,7 +180,7 @@ export function buildMarketRound(
         commitment,
         on_time: true,
         valid: false,
-        reason: "revealed nonce does not match the sealed commitment",
+        reason: "revealed nonce does not match the committed payload",
       };
       reveals.push(invalid);
       invalidReveals.push({ worker: worker.account, reason: invalid.reason! });
@@ -222,6 +229,10 @@ export function buildMarketRound(
 
   const base: Omit<MarketRound, "transcript_hash"> = {
     version: "caliper-market-v1",
+    mode: MARKET_MODE,
+    sealed: false,
+    nonce_source: "derived from round and worker for reproducible fixtures",
+    note: "Bid nonces are deterministic. This demonstrates commit/reveal mechanics; it is not a private or trustless sealed-bid auction. The contract anchors the supplied transcript hash but does not independently validate the auction or the selected worker.",
     round_id: roundId,
     task,
     max_budget: maxBudget,
@@ -231,14 +242,14 @@ export function buildMarketRound(
       {
         worker: duplicateWorker.account,
         commitment: duplicateCommitment,
-        reason: "duplicate commitment ignored after first sealed bid",
+        reason: "duplicate commitment ignored after first bid commitment",
       },
     ],
     reveals,
     invalid_reveals: invalidReveals,
     late_reveals: lateReveals,
     valid_bids: validBids,
-    selection_rule: "lowest valid bid; ties broken by lexicographically smallest worker account",
+    selection_rule: "lowest valid bid; ties broken by lexicographically smallest worker account; selection is computed by this local simulation",
     winner: winner.worker,
   };
 

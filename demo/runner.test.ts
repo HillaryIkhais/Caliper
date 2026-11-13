@@ -7,7 +7,7 @@ import { loadOrCreateVerifierKey } from "../shared/attestation.ts";
 import {
   BASELINE_DIR,
   computeAcceptanceCriteriaHash,
-  computeAcceptanceSuiteHash,
+  computeAcceptancePolicyHash,
   hashTree,
   loadManifest,
   verifyArtifact,
@@ -15,7 +15,7 @@ import {
 
 const manifest = loadManifest();
 const acceptanceCriteriaHash = computeAcceptanceCriteriaHash(manifest, BASELINE_DIR);
-const acceptanceSuiteHash = computeAcceptanceSuiteHash(BASELINE_DIR, manifest);
+const acceptanceSuiteHash = computeAcceptancePolicyHash(BASELINE_DIR, manifest);
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "caliper-runner-test-"));
 const key = loadOrCreateVerifierKey(path.join(tempRoot, "keys"));
 let jobCounter = 1;
@@ -57,6 +57,65 @@ test("genuine source fix passes the pinned suite", () => {
   assert.deepEqual(report.manipulation.disabled_ci, []);
   assert.equal(report.attestation.passed, true);
   assert.equal(report.attestation.protected_files_clean, true);
+});
+
+test("acceptance policy hash binds manifest commands, protected paths, and criteria", () => {
+  assert.notEqual(
+    computeAcceptancePolicyHash(BASELINE_DIR, {
+      ...manifest,
+      test_command: ["node", "tests/other.test.js"],
+    }),
+    acceptanceSuiteHash,
+  );
+  assert.notEqual(
+    computeAcceptancePolicyHash(BASELINE_DIR, {
+      ...manifest,
+      protected_files: ["tests/**"],
+    }),
+    acceptanceSuiteHash,
+  );
+
+  const fixture = path.join(tempRoot, "policy-fixture");
+  fs.cpSync(path.dirname(BASELINE_DIR), fixture, { recursive: true });
+  const fixtureManifest = JSON.parse(
+    fs.readFileSync(path.join(fixture, "manifest.json"), "utf8"),
+  ) as typeof manifest;
+  const before = computeAcceptancePolicyHash(path.join(fixture, "baseline"), fixtureManifest);
+  fs.appendFileSync(path.join(fixture, "ACCEPTANCE.md"), "\nChanged acceptance criteria.\n");
+  const after = computeAcceptancePolicyHash(path.join(fixture, "baseline"), fixtureManifest);
+  assert.notEqual(before, after);
+});
+
+test("runner refuses to sign a policy that does not match the pinned hashes", () => {
+  const candidate = path.join(import.meta.dirname, "fixture", "submissions", "corrected");
+  assert.throws(
+    () =>
+      verifyArtifact({
+        job_id: jobCounter++,
+        attempt: 1,
+        candidateDir: candidate,
+        claimedDeliverableHash: hashTree(candidate),
+        acceptanceCriteriaHash,
+        acceptanceSuiteHash: "sha256:not-the-pinned-policy",
+        verifierPrivateKey: key.privateKey,
+        workDir: path.join(tempRoot, "work"),
+      }),
+    /pinned acceptance policy hash mismatch/,
+  );
+  assert.throws(
+    () =>
+      verifyArtifact({
+        job_id: jobCounter++,
+        attempt: 1,
+        candidateDir: candidate,
+        claimedDeliverableHash: hashTree(candidate),
+        acceptanceCriteriaHash: "sha256:not-the-pinned-criteria",
+        acceptanceSuiteHash,
+        verifierPrivateKey: key.privateKey,
+        workDir: path.join(tempRoot, "work"),
+      }),
+    /pinned acceptance criteria hash mismatch/,
+  );
 });
 
 test("deleted protected test is detected", () => {

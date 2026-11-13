@@ -58,7 +58,7 @@ function renderTask(run) {
     fact("Task", task.title),
     fact("Baseline", task.baseline_commit),
     fact("Acceptance criteria", short(task.acceptance_criteria_hash, 18, 10)),
-    fact("Acceptance suite", short(task.acceptance_suite_hash, 18, 10)),
+    fact("Acceptance policy", short(task.acceptance_suite_hash, 18, 10)),
     fact("Protected paths", task.protected_files.join(", ")),
     fact("Max budget", near(task.max_budget)),
     fact("Workers", String(task.worker_count)),
@@ -103,9 +103,9 @@ function renderMarket(run) {
   }
   $("bids-table").querySelector("tbody").innerHTML = rows.join("");
   $("market-note").textContent =
-    `${market.selection_rule}. ${market.invalid_reveals.length} invalid reveal(s), ` +
+    `${market.note ?? "Market is a local simulation."} ${market.selection_rule}. ${market.invalid_reveals.length} invalid reveal(s), ` +
     `${market.late_reveals.length} late reveal(s), ${market.duplicate_commitments.length} duplicate commitment(s). ` +
-    `Transcript ${short(market.transcript_hash, 22, 10)} is anchored in job ${run.job.id}.`;
+    `The job records transcript ${short(market.transcript_hash, 22, 10)}; it does not validate the auction.`;
 }
 
 function renderRoles(run) {
@@ -139,7 +139,7 @@ function renderAuthority(run) {
 
 function renderIntegrity(run) {
   const checks = [
-    ["Market transcript hash is anchored in the job", run.integrity.market_transcript_anchored],
+    ["Market transcript hash matches the job record", run.integrity.market_transcript_hash_matches_job],
     ["Selected worker recorded by the contract", run.integrity.selected_worker_unchanged_after_failure],
     ["Reports are bound to the current attempt", run.integrity.attempts_bound_to_current_artifact],
     ["Payment required a transfer callback", run.integrity.payment_requires_callback],
@@ -173,6 +173,8 @@ function renderAttempt(attempt) {
   ];
   const evidence = [
     ["Deliverable", short(report.deliverable_hash, 20, 8)],
+    ["Policy", report.acceptance_policy_version ?? "—"],
+    ["Manifest", short(report.manifest_hash, 20, 8)],
     ["Diff", short(report.diff_hash, 20, 8)],
     ["Acceptance suite exit", String(report.test_exit_code)],
     ["CI check exit", String(report.ci_exit_code)],

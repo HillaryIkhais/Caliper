@@ -42,7 +42,7 @@
         <div class="idle-mark">CALIPER</div>
         <h2>One worker bids lowest. It cannot buy acceptance.</h2>
         <p>
-          Run the demo to watch five sealed bids, a deterministic selection, a tampered first
+          Run the demo to watch five deterministic commit/reveal bids, a simulated selection, a tampered first
           attempt, an independent rejection, a genuine correction, and callback-confirmed
           settlement.
         </p>
@@ -84,7 +84,7 @@
             <header class="panel-head">
               <div>
                 <p class="eyebrow">Market</p>
-                <h2>Sealed bids, public rules</h2>
+                <h2>Commit/reveal bids, public rules</h2>
               </div>
               <span class="chip good" id="winner-chip"></span>
             </header>
@@ -97,6 +97,7 @@
               </table>
             </div>
             <p class="micro" id="market-note"></p>
+            <p class="micro">Nonces are deterministic for reproducibility. This is not a private auction; the contract records the transcript hash but does not validate the winner.</p>
           </article>
         </section>
 
@@ -122,7 +123,7 @@
 
           <article class="panel compact">
             <p class="eyebrow">Integrity</p>
-            <h2>Anchored evidence</h2>
+            <h2>Evidence checks</h2>
             <ul class="check-list" id="integrity-list"></ul>
           </article>
         </section>
@@ -178,7 +179,7 @@
 
     <footer>
       <span>CALIPER</span>
-      <span>Local simulation. No on-chain transaction, transaction hash, or wallet signature is invented.</span>
+      <span>Local simulation. No transaction or wallet signature is invented. The runner is fixture-only and has no OS or network sandbox.</span>
     </footer>
 
     <script src="/app.js"></script>

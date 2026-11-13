@@ -27,7 +27,7 @@ against the corrected source. Only then can the coordinator approve settlement.
 ## The complete loop
 
 ```
-Owner -> Coordinator -> five sealed bids -> deterministic selection
+Owner -> Coordinator -> five deterministic commit/reveal bids -> deterministic selection
       -> selected worker submits artifact
       -> independent verifier computes diff + runs pinned suite
       -> signed artifact-bound attestation
@@ -48,15 +48,25 @@ switch to another worker.
 | Branch revocation | Revoking a parent invalidates every descendant. Unrelated branches survive. |
 | Genuine role separation | Coordinator, worker, and verifier need distinct authority nodes **and** distinct NEAR account holders. |
 | Worker cannot self-certify | `submit_deliverable` accepts only an artifact hash. The worker cannot supply diff or tampering claims. |
-| Artifact-bound evidence | The verifier signs job ID, attempt, artifact, criteria, baseline, suite, diff, protected-file result, exit code, runner version, and outcome. |
+| Artifact-bound evidence | The verifier signs job ID, attempt, artifact, criteria, baseline, acceptance policy, diff, protected-file result, exit code, runner version, and outcome. |
 | No stale verification | Every submission increments the attempt and clears all previous evidence. A success cannot authorize a later artifact. |
 | Truthful settlement | `PaymentPending` is not `Paid`. Only a successful transfer callback moves the job to `Paid`; retries cannot double-pay. |
+
+The acceptance-policy hash pins the complete verification policy: the manifest, acceptance
+criteria, baseline identity, test and CI commands, protected paths, and every protected file.
+The runner recomputes that policy from disk and the pinned criteria hash before it signs. A
+mismatch aborts verification instead of producing an attestation.
 
 The contract verifies the authorized verifier's Ed25519 signature over a canonical
 attestation. The off-chain runner performs the test execution and diff computation. The
 contract does **not** execute arbitrary code and does **not** mathematically prove software
 correctness. The trust model is explicit: an independent verifier key pinned at job creation,
 bound to exact evidence, with the actual report independently inspectable.
+
+**Execution boundary:** the runner copies the candidate into a temporary directory, strips the
+host environment, and applies a timeout. It does **not** provide an OS sandbox, filesystem
+jail, or network isolation. It is intentionally limited to the controlled fixture in this
+repository and must not be used to execute arbitrary untrusted repositories.
 
 See [`RULES.md`](RULES.md) for the full economic rules, trust boundaries, and state machine.
 
@@ -88,9 +98,12 @@ The fixture is a small authorization project with a real bug:
 - `src/auth.js` lets every authenticated member access billing.
 - `tests/auth.test.js` and `ci/check.js` are pinned and protected before work begins.
 
-Five deterministic workers submit sealed bid commitments. One reveal is invalid, one is
-late, and one duplicate commitment is rejected. The lowest valid bid selects the
-deliberately adversarial worker (`worker-eve.local`).
+Five deterministic workers submit commit/reveal bid commitments. Nonces are derived
+deterministically for reproducibility, so this is a simulation of the mechanics, not a
+private or trustless sealed-bid auction. One reveal is invalid, one is late, and one
+duplicate commitment is rejected. The lowest valid bid selects the deliberately adversarial
+worker (`worker-eve.local`). The contract records the supplied transcript hash, but it does
+not independently validate the auction or prove the winner.
 
 Attempt 1:
 
@@ -121,7 +134,7 @@ shared/attestation.ts            canonical attestation, digest, Ed25519 sign/ver
 shared/attestation-vector.json   cross-language Rust/TypeScript canonical vector
 demo/fixture/                    pinned baseline, acceptance suite, protected CI, submissions
 demo/runner.ts                   independent diff + test runner + signed report
-demo/market.ts                   sealed-bid market and deterministic selection
+demo/market.ts                   deterministic commit/reveal market simulation
 demo/local-chain.ts              local simulation mirroring contract transitions
 demo/swarm.ts                    end-to-end adversarial coordinator
 demo/cli.ts                      one-command demo
@@ -164,7 +177,7 @@ runner_version|passed
 
 The report digest is `sha256:` over that body. The Ed25519 signature covers
 `body|report_digest|verifier_public_key`. The contract rejects an attestation for a different
-job, artifact, attempt, criteria, baseline, suite, or key, and rejects an invalid signature
+job, artifact, attempt, criteria, baseline, acceptance policy, or key, and rejects an invalid signature
 or inconsistent outcome. `shared/attestation-vector.json` is asserted by both the Rust test
 and the TypeScript suite.
 
@@ -172,7 +185,7 @@ and the TypeScript suite.
 
 ```bash
 cd contract && cargo test          # 32 contract tests
-npm run test:node                  # 14 market, runner, and end-to-end tests
+npm run test:node                  # 16 market, runner, and end-to-end tests
 npm run verify                     # exported-state fixtures
 cd contract && cargo build --release --target wasm32-unknown-unknown  # ~327 KB wasm artifact
 ```
@@ -183,9 +196,9 @@ exhaustion and commitment release, pending payment, failed transfer, idempotent 
 and the existing authority/commitment/revocation guarantees.
 
 Runner tests cover a genuine fix, a deleted protected test, a weakened assertion, a disabled
-CI check, suite restoration, and old-report replay. Market tests cover duplicate commitments,
-invalid and late reveals, deterministic selection, tie-breaking, invalid-bid exclusion, and
-transcript reproducibility.
+CI check, suite restoration, and old-report replay. Market tests cover duplicate commitments, invalid and late reveals, deterministic selection,
+tie-breaking, invalid-bid exclusion, transcript reproducibility, and the explicit non-private
+simulation label.
 
 ## NEAR deployment path
 

@@ -157,9 +157,9 @@
       "verifier_public_key": "1dfb543aac40cdf79702943bb3bb6dce08d4bb0403e9b9cf7b73e533325d1da3",
       "budget": "20000000000000000000000000",
       "acceptance_criteria_hash": "sha256:3a36a72405527cd56c39c8b8e3e24bb909851188239b5c70b1a223144efef4bf",
-      "acceptance_suite_hash": "sha256:b209c50f7886c7de86f4a8cf8443871036f66b2db9b6dcfedcac72af911d3dbe",
+      "acceptance_suite_hash": "sha256:1fce1ec372b70300dc290aee5ff982e2e2f0943da3439b80b5ad7deadf76accc",
       "baseline_commit": "fixture-baseline-v1",
-      "market_transcript_hash": "sha256:9649cdcadf53af6cd2947058bef28495d82875d58f333e6ff7e0874fd0183ee3",
+      "market_transcript_hash": "sha256:7616df9128e1f70949094d3f3585c5241c0049099a8d5952653d3096342e5f07",
       "protected_files": [
         "tests/**",
         "ci/**"
@@ -169,7 +169,7 @@
       "max_attempts": 2,
       "modified_files_hash": "sha256:77a0fed7bac2bb698540d213a3220699cfa7b9192f47d3e815d5b55891543a8c",
       "tampering_detected": false,
-      "independent_report_hash": "sha256:192f32229f384e6b5c215abbe3e80b5f13cb379c0fce20020773ee7ae48baed5",
+      "independent_report_hash": "sha256:6e22efd42a30d33d9c935bf0174752482036cef3ead03dabe4144a12c70814ae",
       "independent_passed": true,
       "test_exit_code": 0,
       "verification": {
@@ -180,15 +180,15 @@
           "deliverable_hash": "sha256:1422550dad99098317100177a4ec6ffa140c81b7badd6abf5622a6624acb283b",
           "acceptance_criteria_hash": "sha256:3a36a72405527cd56c39c8b8e3e24bb909851188239b5c70b1a223144efef4bf",
           "baseline_commit": "fixture-baseline-v1",
-          "acceptance_suite_hash": "sha256:b209c50f7886c7de86f4a8cf8443871036f66b2db9b6dcfedcac72af911d3dbe",
+          "acceptance_suite_hash": "sha256:1fce1ec372b70300dc290aee5ff982e2e2f0943da3439b80b5ad7deadf76accc",
           "diff_hash": "sha256:77a0fed7bac2bb698540d213a3220699cfa7b9192f47d3e815d5b55891543a8c",
           "protected_files_clean": true,
           "test_exit_code": 0,
           "runner_version": "caliper-runner-v1",
           "passed": true,
-          "report_digest": "sha256:192f32229f384e6b5c215abbe3e80b5f13cb379c0fce20020773ee7ae48baed5",
+          "report_digest": "sha256:6e22efd42a30d33d9c935bf0174752482036cef3ead03dabe4144a12c70814ae",
           "verifier_public_key": "1dfb543aac40cdf79702943bb3bb6dce08d4bb0403e9b9cf7b73e533325d1da3",
-          "signature": "890c3be6cff0e239b342d4f38fc63ef1983d7d4f8f766a6ab04e87a8c3b6aabaa148fc3695f6c7df60c4ca9f79cd4b644a4f423c516aaf8b22d3817369f3c70a"
+          "signature": "706ffd5002cb82face0dd5592ba69050d33d4736380344139985bde4bf7db9f6d94487da23a9596aba72040386a66f6b3917966b97470d97c8b96b51af31da0e"
         },
         "recorded_at": 12
       },

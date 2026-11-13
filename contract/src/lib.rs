@@ -170,11 +170,13 @@ pub struct Job {
     pub budget: Balance,
     /// Hash of the acceptance criteria document fixed before work began.
     pub acceptance_criteria_hash: String,
-    /// Hash/version of the pinned acceptance test suite.
+    /// Hash of the complete pinned acceptance policy, including the suite, commands,
+    /// protected paths, and criteria. Produced and rechecked by the independent runner.
     pub acceptance_suite_hash: String,
     /// Baseline commit the artifact is diffed against.
     pub baseline_commit: String,
-    /// Hash of the sealed-bid market transcript that selected the worker.
+    /// Hash of the coordinator-supplied deterministic market transcript.
+    /// The contract records this hash but does not validate the auction.
     pub market_transcript_hash: String,
     /// Protected paths the worker must not modify. Supports exact paths and `prefix/**`.
     pub protected_files: Vec<String>,
@@ -825,7 +827,7 @@ impl Contract {
         );
 
         assert!(!acceptance_criteria_hash.is_empty(), "acceptance criteria hash required");
-        assert!(!acceptance_suite_hash.is_empty(), "acceptance suite hash required");
+        assert!(!acceptance_suite_hash.is_empty(), "acceptance-policy hash required");
         assert!(!baseline_commit.is_empty(), "baseline commit required");
         assert!(!market_transcript_hash.is_empty(), "market transcript hash required");
         assert!(amount > 0, "budget must be positive");

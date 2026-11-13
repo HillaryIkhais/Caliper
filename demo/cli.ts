@@ -5,11 +5,13 @@ const rejected = run.attempts.filter((attempt) => attempt.chain_status === "Reje
 const paid = run.payment.state === "Paid";
 
 console.log("");
-console.log("CALIPER adversarial swarm demonstration");
+console.log("CALIPER adversarial verification demonstration");
 console.log("---------------------------------------");
 console.log(`mode:              ${run.mode}`);
+console.log(`market mode:       ${run.market.mode} (not a private sealed-bid auction)`);
 console.log(`market winner:     ${run.identities.selected_worker.account} (${run.identities.selected_worker.display_name})`);
 console.log(`market transcript: ${run.market.transcript_hash}`);
+console.log(`acceptance policy: ${run.task.acceptance_suite_hash}`);
 console.log(`job:               ${run.job.id}`);
 console.log(`attempt 1:         ${run.attempts[0].chain_status} — ${run.attempts[0].outcome}`);
 console.log(`  protected violations: ${run.attempts[0].report.protected_violations.join(", ") || "none"}`);

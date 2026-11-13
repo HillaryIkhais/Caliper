@@ -12,8 +12,10 @@ import {
   signAttestation,
   type VerificationAttestation,
 } from "../shared/attestation.ts";
+import { hashCanonical } from "../shared/canonical.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+export const ACCEPTANCE_POLICY_VERSION = "caliper-acceptance-policy-v1";
 
 export const FIXTURE_DIR = path.join(HERE, "fixture");
 export const BASELINE_DIR = path.join(FIXTURE_DIR, "baseline");
@@ -47,6 +49,8 @@ export interface VerificationReport {
   attempt: number;
   task: string;
   baseline_commit: string;
+  acceptance_policy_version: string;
+  manifest_hash: string;
   acceptance_criteria_hash: string;
   acceptance_suite_hash: string;
   deliverable_hash: string;
@@ -122,16 +126,36 @@ export function matchesProtected(file: string, patterns: string[]): boolean {
   });
 }
 
+export function computeAcceptancePolicyHash(
+  baselineDir = BASELINE_DIR,
+  manifest = loadManifest(),
+): string {
+  const protectedFiles: { path: string; hash: string }[] = [];
+  for (const rel of walkFiles(baselineDir)) {
+    if (!matchesProtected(rel, manifest.protected_files)) continue;
+    protectedFiles.push({
+      path: rel,
+      hash: sha256Prefixed(fs.readFileSync(path.join(baselineDir, rel))),
+    });
+  }
+
+  // The pinned hash covers the complete verification policy, not only the test
+  // files. A worker-supplied runner cannot swap commands or protected paths while
+  // reusing the original hash.
+  return hashCanonical({
+    version: ACCEPTANCE_POLICY_VERSION,
+    manifest,
+    acceptance_criteria_hash: computeAcceptanceCriteriaHash(manifest, baselineDir),
+    protected_files: protectedFiles,
+  });
+}
+
+/** @deprecated Use computeAcceptancePolicyHash; the hash covers the full policy. */
 export function computeAcceptanceSuiteHash(
   baselineDir = BASELINE_DIR,
   manifest = loadManifest(),
 ): string {
-  const lines: string[] = [];
-  for (const rel of walkFiles(baselineDir)) {
-    if (!matchesProtected(rel, manifest.protected_files)) continue;
-    lines.push(`${rel}\u0000${sha256Hex(fs.readFileSync(path.join(baselineDir, rel)))}`);
-  }
-  return sha256Prefixed(lines.join("\n"));
+  return computeAcceptancePolicyHash(baselineDir, manifest);
 }
 
 export function computeAcceptanceCriteriaHash(
@@ -311,6 +335,19 @@ function runCheckedCommand(
 export function verifyArtifact(options: VerifyOptions): VerificationReport {
   const baselineDir = options.baselineDir ?? BASELINE_DIR;
   const manifest = loadManifest(options.manifestPath ?? DEFAULT_MANIFEST_PATH);
+  const pinnedCriteriaHash = computeAcceptanceCriteriaHash(manifest, baselineDir);
+  const pinnedSuiteHash = computeAcceptancePolicyHash(baselineDir, manifest);
+  const manifestHash = hashCanonical(manifest);
+  if (options.acceptanceCriteriaHash !== pinnedCriteriaHash) {
+    throw new Error(
+      `pinned acceptance criteria hash mismatch: runner computed ${pinnedCriteriaHash}`,
+    );
+  }
+  if (options.acceptanceSuiteHash !== pinnedSuiteHash) {
+    throw new Error(
+      `pinned acceptance policy hash mismatch: runner computed ${pinnedSuiteHash}`,
+    );
+  }
   const workRoot = options.workDir ?? os.tmpdir();
   fs.mkdirSync(workRoot, { recursive: true });
   const tempRoot = fs.mkdtempSync(path.join(workRoot, "caliper-run-"));
@@ -372,9 +409,9 @@ export function verifyArtifact(options: VerifyOptions): VerificationReport {
         job_id: options.job_id,
         attempt: options.attempt,
         deliverable_hash: options.claimedDeliverableHash,
-        acceptance_criteria_hash: options.acceptanceCriteriaHash,
+        acceptance_criteria_hash: pinnedCriteriaHash,
         baseline_commit: manifest.baseline_commit,
-        acceptance_suite_hash: options.acceptanceSuiteHash,
+        acceptance_suite_hash: pinnedSuiteHash,
         diff_hash: diffHash,
         protected_files_clean: clean,
         test_exit_code: combinedExit,
@@ -390,8 +427,10 @@ export function verifyArtifact(options: VerifyOptions): VerificationReport {
       attempt: options.attempt,
       task: manifest.task,
       baseline_commit: manifest.baseline_commit,
-      acceptance_criteria_hash: options.acceptanceCriteriaHash,
-      acceptance_suite_hash: options.acceptanceSuiteHash,
+      acceptance_policy_version: ACCEPTANCE_POLICY_VERSION,
+      manifest_hash: manifestHash,
+      acceptance_criteria_hash: pinnedCriteriaHash,
+      acceptance_suite_hash: pinnedSuiteHash,
       deliverable_hash: actualDeliverableHash,
       claimed_deliverable_hash: options.claimedDeliverableHash,
       deliverable_matches_claim: deliverableMatchesClaim,

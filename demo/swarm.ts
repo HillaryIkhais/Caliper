@@ -6,7 +6,7 @@ import { buildMarketRound, formatNear, nearFromTenths, WORKERS } from "./market.
 import {
   BASELINE_DIR,
   computeAcceptanceCriteriaHash,
-  computeAcceptanceSuiteHash,
+  computeAcceptancePolicyHash,
   hashTree,
   loadManifest,
   verifyArtifact,
@@ -90,9 +90,10 @@ export interface SwarmRun {
     receipt_id: string;
   };
   integrity: {
-    market_transcript_anchored: boolean;
-    market_transcript_hash_on_chain: string;
+    market_transcript_hash_matches_job: boolean;
+    market_transcript_hash_in_job: string;
     market_transcript_hash_recomputed: string;
+    market_selection_validated_by_contract: false;
     selected_worker_recorded_by_contract: string;
     selected_worker_unchanged_after_failure: boolean;
     attempts_bound_to_current_artifact: boolean;
@@ -124,7 +125,7 @@ export function runSwarm(): SwarmRun {
   const key = loadOrCreateVerifierKey(KEY_DIR);
   const acceptanceCriteria = fs.readFileSync(path.join(path.dirname(BASELINE_DIR), manifest.acceptance_criteria), "utf8");
   const acceptanceCriteriaHash = computeAcceptanceCriteriaHash(manifest, BASELINE_DIR);
-  const acceptanceSuiteHash = computeAcceptanceSuiteHash(BASELINE_DIR, manifest);
+  const acceptanceSuiteHash = computeAcceptancePolicyHash(BASELINE_DIR, manifest);
 
   const chain = new LocalCaliperChain(OWNER_ACCOUNT);
   const rootAllocation = nearFromTenths(1000n);
@@ -325,9 +326,10 @@ export function runSwarm(): SwarmRun {
       receipt_id: `local-receipt:${runId}`,
     },
     integrity: {
-      market_transcript_anchored: finalJob.market_transcript_hash === recomputedMarketHash,
-      market_transcript_hash_on_chain: finalJob.market_transcript_hash,
+      market_transcript_hash_matches_job: finalJob.market_transcript_hash === recomputedMarketHash,
+      market_transcript_hash_in_job: finalJob.market_transcript_hash,
       market_transcript_hash_recomputed: recomputedMarketHash,
+      market_selection_validated_by_contract: false,
       selected_worker_recorded_by_contract: finalJob.worker_holder,
       selected_worker_unchanged_after_failure: finalJob.worker_holder === winner.account,
       attempts_bound_to_current_artifact:

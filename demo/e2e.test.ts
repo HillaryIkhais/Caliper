@@ -13,7 +13,7 @@ import { runSwarm } from "./swarm.ts";
 import {
   BASELINE_DIR,
   computeAcceptanceCriteriaHash,
-  computeAcceptanceSuiteHash,
+  computeAcceptancePolicyHash,
   hashTree,
   loadManifest,
   verifyArtifact,
@@ -55,7 +55,8 @@ test("complete adversarial scenario runs end to end", () => {
   assert.equal(run.payment.status, "PaymentPending");
   assert.equal(run.payment.state, "Paid");
   assert.equal(run.payment.simulated, true);
-  assert.equal(run.integrity.market_transcript_anchored, true);
+  assert.equal(run.integrity.market_transcript_hash_matches_job, true);
+  assert.equal(run.integrity.market_selection_validated_by_contract, false);
   assert.equal(run.integrity.selected_worker_unchanged_after_failure, true);
   assert.equal(run.integrity.payment_requires_callback, true);
 
@@ -73,7 +74,7 @@ test("old attempt report and old artifact report cannot be reused", () => {
     const key = loadOrCreateVerifierKey(path.join(temp, "keys"));
     const manifest = loadManifest();
     const criteria = computeAcceptanceCriteriaHash(manifest, BASELINE_DIR);
-    const suite = computeAcceptanceSuiteHash(BASELINE_DIR, manifest);
+    const suite = computeAcceptancePolicyHash(BASELINE_DIR, manifest);
 
     const chain = new LocalCaliperChain("owner.local");
     const root = chain.createRoot("coordinator.local", nearFromTenths(1000n), permissions(nearFromTenths(1000n)));

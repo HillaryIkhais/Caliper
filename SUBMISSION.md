@@ -83,6 +83,8 @@ npm run test:node
 npm run verify
 ```
 
+cd contract && cargo build --release --target wasm32-unknown-unknown
+
 ## Judge evaluation path
 
 1. **Verify deployment:** open the Explorer link and confirm `FINAL`.

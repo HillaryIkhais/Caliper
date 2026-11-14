@@ -131,8 +131,11 @@ Open --submit--> Submitted --pass--> Verified --accept--> PaymentPending --callb
 `Paid` means the transfer succeeded. `PaymentPending` never means paid. On transfer
 failure the budget stays reserved and the job is `PaymentFailed`; a retry cannot pay
 twice because only a `PaymentPending` job can settle. A coordinator may cancel a
-`Verified` or `PaymentFailed` job before settlement, which releases the commitment even
-if the worker or verifier was revoked after verification.
+`Open` or `Rejected` job before settlement, which releases the commitment even
+if the worker or verifier was revoked after verification. A `Verified` job is a fixed
+payment obligation and is deliberately not cancellable; use `release_verified_payment`
+instead. A `Submitted` job becomes cancellable only after `VERIFICATION_TIMEOUT_BLOCKS`
+(1,000 blocks) so a stalled verifier cannot lock escrowed funds forever.
 
 ## 6. Evidence and trust assumptions
 

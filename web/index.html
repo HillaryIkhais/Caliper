@@ -17,169 +17,157 @@
       </a>
       <div class="topbar-right">
         <span class="chip muted" id="mode-chip">local simulation</span>
-        <button class="btn primary" id="run-btn">Run adversarial demo</button>
-        <button class="btn ghost" id="reset-btn">Reset</button>
+        <span class="chip muted" id="step-chip">idle</span>
+        <button class="btn ghost" id="reset-btn">New session</button>
       </div>
     </header>
 
     <main>
-      <section class="hero">
+      <!-- Hiring / coordination workflow -->
+      <section id="view-idle" class="panel hero">
         <p class="eyebrow">Independent acceptance for agent-created code</p>
         <h1>Payment is not a status update.</h1>
         <p class="lede">
-          An autonomous worker can make its own CI green by weakening the tests. CALIPER
-          detects the manipulation, blocks payment, and releases funds only after a separate
-          verifier runs the pinned suite against the exact artifact.
+          A coordinator hires a worker agent. The worker submits an artifact. An
+          independent verifier runs the pinned suite against the exact artifact.
+          Failed work returns for correction. Passing work gets paid — exactly the
+          winning bid.
         </p>
         <div class="hero-actions">
-          <button class="btn primary large" id="hero-run-btn">Watch the adversarial loop</button>
+          <button class="btn primary large" id="start-btn">Post a hiring task</button>
           <a class="btn ghost large" href="#evidence">Inspect the evidence</a>
         </div>
-        <p class="micro" id="hero-status">No run loaded. The demo is deterministic and runs offline.</p>
       </section>
 
-      <section id="idle" class="panel idle">
-        <div class="idle-mark">CALIPER</div>
-        <h2>One worker bids lowest. It cannot buy acceptance.</h2>
-        <p>
-          Run the demo to watch five deterministic commit/reveal bids, a simulated selection, a tampered first
-          attempt, an independent rejection, a genuine correction, and callback-confirmed
-          settlement.
-        </p>
-      </section>
-
-      <div id="run-view" hidden>
-        <section class="verdict" id="verdict">
-          <div>
-            <p class="eyebrow" id="verdict-eyebrow">attempt 1</p>
-            <h2 id="verdict-title">CALIPER blocked the payment.</h2>
-            <p id="verdict-copy">
-              The worker reported success. The independent runner found protected acceptance
-              files changed and reran the pinned suite against the real source.
-            </p>
-          </div>
-          <div class="verdict-state">
-            <span class="status-dot"></span>
-            <span id="verdict-state">Payment blocked</span>
-          </div>
-        </section>
-
-        <section class="grid two">
-          <article class="panel">
-            <header class="panel-head">
-              <div>
-                <p class="eyebrow">Work round</p>
-                <h2>Pinned before work</h2>
-              </div>
-              <span class="chip" id="retry-chip">2 attempts</span>
-            </header>
-            <dl class="facts" id="task-facts"></dl>
-            <details class="raw">
-              <summary>Acceptance criteria</summary>
-              <pre id="criteria-text"></pre>
-            </details>
-          </article>
-
-          <article class="panel">
-            <header class="panel-head">
-              <div>
-                <p class="eyebrow">Market</p>
-                <h2>Commit/reveal bids, public rules</h2>
-              </div>
-              <span class="chip good" id="winner-chip"></span>
-            </header>
-            <div class="table-wrap">
-              <table id="bids-table">
-                <thead>
-                  <tr><th>Worker</th><th>Commitment</th><th>Reveal</th><th class="num">Bid</th><th>State</th></tr>
-                </thead>
-                <tbody></tbody>
-              </table>
-            </div>
-            <p class="micro" id="market-note"></p>
-            <p class="micro">Nonces are deterministic for reproducibility. This is not a private auction; the contract records the transcript hash but does not validate the winner.</p>
-          </article>
-        </section>
-
-        <section class="grid three">
-          <article class="panel compact">
-            <p class="eyebrow">Roles</p>
-            <h2>Three separate identities</h2>
-            <ul class="role-list" id="role-list"></ul>
-            <p class="micro">Distinct authority nodes and distinct account holders. Local simulation labels are explicit.</p>
-          </article>
-
-          <article class="panel compact">
-            <p class="eyebrow">Authority</p>
-            <h2>Budget commitments</h2>
-            <div class="meter">
-              <div class="meter-row"><span>Root allocation</span><strong id="root-alloc"></strong></div>
-              <div class="bar"><span id="alloc-bar"></span></div>
-              <div class="meter-row"><span>Committed before job</span><strong id="committed-before"></strong></div>
-              <div class="meter-row"><span>Committed after job</span><strong id="committed-after"></strong></div>
-              <div class="meter-row"><span>Available after job</span><strong id="available-after"></strong></div>
-            </div>
-          </article>
-
-          <article class="panel compact">
-            <p class="eyebrow">Integrity</p>
-            <h2>Evidence checks</h2>
-            <ul class="check-list" id="integrity-list"></ul>
-          </article>
-        </section>
-
-        <section id="evidence">
-          <header class="section-head">
-            <div>
-              <p class="eyebrow">Attempts</p>
-              <h2>Claimed success vs. computed evidence</h2>
-            </div>
-            <span class="chip warn">verify, don't trust</span>
-          </header>
-          <div id="attempts" class="attempts"></div>
-        </section>
-
-        <section class="grid two">
-          <article class="panel">
-            <header class="panel-head">
-              <div>
-                <p class="eyebrow">Settlement</p>
-                <h2>Callback-confirmed payment</h2>
-              </div>
-              <span class="chip good" id="payment-chip"></span>
-            </header>
-            <div class="pipeline" id="payment-pipeline"></div>
-            <dl class="facts" id="payment-facts"></dl>
-            <p class="micro" id="payment-note"></p>
-          </article>
-
-          <article class="panel">
-            <header class="panel-head">
-              <div>
-                <p class="eyebrow">Events</p>
-                <h2>Contract timeline</h2>
-              </div>
-            </header>
-            <ol class="event-list" id="event-list"></ol>
-          </article>
-        </section>
-      </div>
-
-      <section class="panel raw-panel" id="raw-panel" hidden>
+      <!-- Task posting -->
+      <section id="view-post-task" hidden class="panel">
         <header class="panel-head">
           <div>
-            <p class="eyebrow">Inspectable evidence</p>
-            <h2 id="raw-title">Verification report</h2>
+            <p class="eyebrow">Step 1 — Hire</p>
+            <h2>Post a coding task</h2>
           </div>
-          <button class="btn ghost small" id="raw-close">Close</button>
+          <button class="btn ghost small" id="back-to-idle">Back</button>
         </header>
-        <pre id="raw-json"></pre>
+        <form id="task-form">
+          <div class="form-row">
+            <label>Task title</label>
+            <input type="text" id="task-title" value="Fix billing authorization bypass" required />
+          </div>
+          <div class="form-row">
+            <label>Acceptance criteria</label>
+            <textarea id="task-criteria" required>1. Anonymous users are denied billing access.
+2. Authenticated members are denied billing access.
+3. Admin users are allowed billing access.
+4. The audit label remains correct.
+5. The pinned suite and CI check pass without modification.</textarea>
+          </div>
+          <div class="form-row">
+            <label>Maximum budget (NEAR)</label>
+            <input type="text" id="task-budget" value="20" required />
+            <p class="micro">The coordinator escrows this amount. The worker is paid exactly the winning bid; the unused remainder returns to the coordinator.</p>
+          </div>
+          <button class="btn primary" type="submit">Post task and open bidding</button>
+        </form>
+      </section>
+
+      <!-- Bidding / winner selection -->
+      <section id="view-bids" hidden class="panel">
+        <header class="panel-head">
+          <div>
+            <p class="eyebrow">Step 2 — Bid</p>
+            <h2>Worker bids (off-chain simulation)</h2>
+          </div>
+          <button class="btn ghost small" id="back-to-task">Back</button>
+        </header>
+        <p class="micro">Five deterministic commit/reveal bids. The contract records the transcript hash and the coordinator's selection — it does not validate the auction.</p>
+        <div class="table-wrap">
+          <table id="bids-table">
+            <thead>
+              <tr><th>Worker</th><th>Bid</th><th>State</th><th>Action</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="micro" id="market-note"></p>
+      </section>
+
+      <!-- Delivery -->
+      <section id="view-deliver" hidden class="panel">
+        <header class="panel-head">
+          <div>
+            <p class="eyebrow">Step 3 — Deliver</p>
+            <h2>Worker submits an artifact</h2>
+          </div>
+          <button class="btn ghost small" id="back-to-bids">Back</button>
+        </header>
+        <p class="micro">The worker submits only an artifact hash — they cannot certify their own tests or supply tampering claims.</p>
+        <div class="form-row">
+          <label>Submission</label>
+          <div class="choice-list">
+            <label class="choice">
+              <input type="radio" name="artifact" value="tampered" checked />
+              <span>Tampered artifact</span>
+              <span class="choice-desc">weakens tests and disables CI; claims success</span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="artifact" value="corrected" />
+              <span>Corrected artifact</span>
+              <span class="choice-desc">genuine source fix; pinned suite passes</span>
+            </label>
+          </div>
+        </div>
+        <button class="btn primary" id="deliver-btn">Submit deliverable</button>
+      </section>
+
+      <!-- Verification -->
+      <section id="view-verify" hidden class="panel">
+        <header class="panel-head">
+          <div>
+            <p class="eyebrow">Step 4 — Verify</p>
+            <h2>Independent verifier runs the pinned suite</h2>
+          </div>
+          <button class="btn ghost small" id="back-to-deliver">Back</button>
+        </header>
+        <p class="micro">The verifier is a distinct identity. It reruns the buyer's original tests against the exact artifact and checks for tampering.</p>
+        <button class="btn primary" id="verify-btn">Run independent verification</button>
+      </section>
+
+      <!-- Correction / settlement -->
+      <section id="view-decide" hidden class="panel">
+        <header class="panel-head">
+          <div>
+            <p class="eyebrow">Step 5 — Correct or settle</p>
+            <h2 id="decide-title">Verification result</h2>
+          </div>
+          <button class="btn ghost small" id="back-to-decide">Back</button>
+        </header>
+        <div id="decision-content"></div>
+        <div class="form-row" id="decision-actions"></div>
+      </section>
+
+      <!-- Evidence / results -->
+      <section id="evidence" class="panel">
+        <header class="section-head">
+          <div>
+            <p class="eyebrow">Evidence</p>
+            <h2>Claimed success vs. computed evidence</h2>
+          </div>
+        </header>
+        <div id="attempts" class="attempts"></div>
+        <div id="integrity-list-wrap" class="panel compact" style="margin-top:16px">
+          <h2>Evidence checks</h2>
+          <ul class="check-list" id="integrity-list"></ul>
+        </div>
+        <div class="raw-panel">
+          <button class="btn ghost small" id="raw-close">Close</button>
+          <pre id="raw-json"></pre>
+        </div>
       </section>
     </main>
 
     <footer>
       <span>CALIPER</span>
-      <span>Local simulation. No transaction or wallet signature is invented. The runner is fixture-only and has no OS or network sandbox.</span>
+      <span>Local simulation. No transaction or wallet signature is invented. Default runner execution is process-only (scrubbed environment, fixed cwd, 15s timeout); not a security boundary. <strong>CALIPER_SANDBOX=os</strong> opts into a fail-closed macOS/Linux OS sandbox that confines writes and denies network.</span>
     </footer>
 
     <script src="/app.js"></script>

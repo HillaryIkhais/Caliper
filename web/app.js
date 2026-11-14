@@ -36,325 +36,418 @@ function fact(dt, dd, tone = "") {
   return `<div><dt>${esc(dt)}</dt><dd class="${tone}">${esc(dd)}</dd></div>`;
 }
 
-function setMode(state) {
-  const chip = $("mode-chip");
-  chip.textContent = state.mode === "local-simulation" ? "local simulation" : "idle";
-  chip.className = state.mode === "local-simulation" ? "chip warn" : "chip muted";
-}
-
-function showIdle() {
-  $("idle").hidden = false;
-  $("run-view").hidden = true;
-  $("raw-panel").hidden = true;
-  setMode({ mode: "idle" });
-  $("hero-status").textContent =
-    "No run loaded. The demo is deterministic and runs offline with no model calls.";
-}
-
-function renderTask(run) {
-  const task = run.task;
-  $("retry-chip").textContent = `${task.retry_limit} attempts`;
-  $("task-facts").innerHTML = [
-    fact("Task", task.title),
-    fact("Baseline", task.baseline_commit),
-    fact("Acceptance criteria", short(task.acceptance_criteria_hash, 18, 10)),
-    fact("Acceptance policy", short(task.acceptance_suite_hash, 18, 10)),
-    fact("Protected paths", task.protected_files.join(", ")),
-    fact("Max budget", near(task.max_budget)),
-    fact("Workers", String(task.worker_count)),
-  ].join("");
-  $("criteria-text").textContent = task.acceptance_criteria;
-}
-
-function renderMarket(run) {
-  const market = run.market;
-  $("winner-chip").textContent = `winner: ${run.identities.selected_worker.display_name}`;
-  const rows = [];
-  for (const worker of market.eligible_workers) {
-    const commitment = market.commitments.find((entry) => entry.worker === worker);
-    const reveal = market.reveals.find((entry) => entry.worker === worker);
-    const invalid = market.invalid_reveals.find((entry) => entry.worker === worker);
-    const late = market.late_reveals.find((entry) => entry.worker === worker);
-    const duplicate = market.duplicate_commitments.find((entry) => entry.worker === worker);
-    const isWinner = worker === market.winner;
-    let state = "valid";
-    let tone = "good";
-    if (isWinner) {
-      state = "winner";
-      tone = "good";
-    } else if (invalid) {
-      state = "invalid reveal";
-      tone = "bad";
-    } else if (late) {
-      state = "late reveal";
-      tone = "bad";
-    } else if (duplicate) {
-      state = "duplicate ignored";
-      tone = "warn";
-    }
-    rows.push(`
-      <tr class="${isWinner ? "winner" : ""}">
-        <td class="mono">${esc(worker)}</td>
-        <td class="mono muted">${esc(short(commitment?.commitment ?? "—", 14, 6))}</td>
-        <td class="mono">${esc(reveal ? near(reveal.amount) : "—")}</td>
-        <td class="num mono">${esc(reveal ? near(reveal.amount) : "—")}</td>
-        <td>${statusChip(state, tone)}</td>
-      </tr>`);
+function hideAllViews() {
+  for (const el of document.querySelectorAll("section[id^=view-], #evidence")) {
+    el.hidden = true;
   }
-  $("bids-table").querySelector("tbody").innerHTML = rows.join("");
+}
+
+function setMode(mode, step) {
+  $("mode-chip").textContent = mode === "local-simulation" ? "local simulation" : "idle";
+  $("mode-chip").className = mode === "local-simulation" ? "chip warn" : "chip muted";
+  $("step-chip").textContent = step;
+  $("step-chip").className = `chip ${step === "idle" ? "muted" : "warn"}`;
+}
+
+async function api(path, method = "GET", body) {
+  const opts = { method, cache: "no-store", headers: {} };
+  if (body) opts.headers["content-type"] = "application/json";
+  const res = await fetch(path, opts);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error ?? `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+function showView(id) {
+  hideAllViews();
+  $(id).hidden = false;
+}
+
+function renderTask(state) {
+  $("task-title").value = state.task?.title || "";
+  $("task-criteria").value = state.task?.acceptance_criteria || "";
+  $("task-budget").value = state.task?.max_budget ? String(Number(state.task.max_budget) / 1e24) : "20";
+}
+
+function renderBids(state) {
+  const tbody = $("bids-table").querySelector("tbody");
+  const bids = state.market?.valid_bids || [];
+  const winner = state.market?.winner_bid?.worker;
+  tbody.innerHTML = bids
+    .map(
+      (b) => {
+        const isWinner = b.worker === winner;
+        return `
+          <tr class="${isWinner ? "winner" : ""}">
+            <td class="mono">${esc(b.worker)}</td>
+            <td class="num mono">${near(b.amount)}</td>
+            <td>${isWinner ? statusChip("winning bid", "good") : statusChip("valid", "")}</td>
+            <td>
+              ${isWinner
+                ? `<button class="btn primary small" data-select="${esc(b.worker)}">Select</button>`
+                : `<button class="btn ghost small" data-bid="${esc(b.worker)}|${esc(b.amount)}">Bid ${near(b.amount)}</button>`}
+            </td>
+          </tr>`;
+      },
+    )
+    .join("");
   $("market-note").textContent =
-    `${market.note ?? "Market is a local simulation."} ${market.selection_rule}. ${market.invalid_reveals.length} invalid reveal(s), ` +
-    `${market.late_reveals.length} late reveal(s), ${market.duplicate_commitments.length} duplicate commitment(s). ` +
-    `The job records transcript ${short(market.transcript_hash, 22, 10)}; it does not validate the auction.`;
-}
-
-function renderRoles(run) {
-  const rows = [
-    ["Coordinator", `${run.identities.coordinator.account} · node ${run.identities.coordinator.node}`],
-    [
-      "Selected worker",
-      `${run.identities.selected_worker.account} · node ${run.identities.selected_worker.node}`,
-    ],
-    ["Verifier", `${run.identities.verifier.account} · node ${run.identities.verifier.node}`],
-    ["Verifier key", short(run.identities.verifier.public_key, 18, 10)],
-    ["Role check", "distinct nodes + distinct accounts"],
-  ];
-  $("role-list").innerHTML = rows
-    .map(([label, value]) => `<li><span>${esc(label)}</span><span>${esc(value)}</span></li>`)
-    .join("");
-}
-
-function renderAuthority(run) {
-  const authority = run.authority;
-  const root = authority.root_node;
-  const committed = BigInt(authority.coordinator_committed_after_job);
-  const allocation = BigInt(root.allocation);
-  const pct = allocation === 0n ? 0 : Number((committed * 1000n) / allocation) / 10;
-  $("root-alloc").textContent = near(root.allocation);
-  $("committed-before").textContent = near(authority.coordinator_committed_before_job);
-  $("committed-after").textContent = near(authority.coordinator_committed_after_job);
-  $("available-after").textContent = near(authority.coordinator_available_after_job);
-  $("alloc-bar").style.width = `${Math.min(100, pct)}%`;
-}
-
-function renderIntegrity(run) {
-  const checks = [
-    ["Market transcript hash matches the job record", run.integrity.market_transcript_hash_matches_job],
-    ["Selected worker recorded by the contract", run.integrity.selected_worker_unchanged_after_failure],
-    ["Reports are bound to the current attempt", run.integrity.attempts_bound_to_current_artifact],
-    ["Payment required a transfer callback", run.integrity.payment_requires_callback],
-  ];
-  $("integrity-list").innerHTML = checks
-    .map(
-      ([label, ok]) =>
-        `<li class="${ok ? "" : "fail"}">${esc(label)}</li>`,
-    )
-    .join("");
-}
-
-function renderAttempt(attempt) {
-  const report = attempt.report;
-  const blocked = attempt.chain_status === "Rejected";
-  const changed = (report.changed_files ?? [])
-    .map((change) => {
-      const violation = (report.protected_violations ?? []).some((entry) =>
-        entry.includes(change.path),
-      );
-      return `<li class="${violation ? "violation" : ""}">${esc(change.status)} ${esc(change.path)}${violation ? " — protected" : ""}</li>`;
-    })
-    .join("");
-  const weak = report.manipulation?.weakened_assertions ?? [];
-  const disabled = report.manipulation?.disabled_ci ?? [];
-  const deleted = report.manipulation?.deleted_tests ?? [];
-  const tags = [
-    ...weak.map((entry) => `<span class="tag bad">${esc(entry)}</span>`),
-    ...disabled.map((entry) => `<span class="tag bad">${esc(entry)}</span>`),
-    ...deleted.map((entry) => `<span class="tag bad">deleted ${esc(entry)}</span>`),
-  ];
-  const evidence = [
-    ["Deliverable", short(report.deliverable_hash, 20, 8)],
-    ["Policy", report.acceptance_policy_version ?? "—"],
-    ["Manifest", short(report.manifest_hash, 20, 8)],
-    ["Diff", short(report.diff_hash, 20, 8)],
-    ["Artifact matches claim", String(report.attestation.deliverable_matches_claim)],
-    ["Acceptance suite exit", String(report.test_exit_code)],
-    ["CI check exit", String(report.ci_exit_code)],
-    ["Protected files clean", String(report.attestation.protected_files_clean)],
-    ["Passed", String(report.attestation.passed)],
-    ["Report digest", short(report.attestation.report_digest, 22, 10)],
-    ["Signature", short(report.attestation.signature, 22, 10)],
-  ]
-    .map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`)
-    .join("");
-
-  return `
-    <article class="attempt ${blocked ? "blocked" : "passed"}">
-      <div class="attempt-head">
-        <div>
-          <p class="eyebrow">Attempt ${attempt.attempt} · ${esc(attempt.artifact)} artifact</p>
-          <h3>${blocked ? "Worker claim rejected" : "Correction accepted"}</h3>
-        </div>
-        ${statusChip(attempt.chain_status, blocked ? "bad" : "good")}
-      </div>
-      <div class="attempt-body">
-        <div class="attempt-col">
-          <div class="claim-box">
-            <div class="label">Worker's own claim</div>
-            <p>“${esc(attempt.worker_claim.summary)}”</p>
-            <div class="tag-row">
-              <span class="tag ${attempt.worker_claim.passed ? "good" : "bad"}">claimed ${attempt.worker_claim.passed ? "PASS" : "FAIL"}</span>
-              <span class="tag">${esc(attempt.worker_claim.claimed_by)}</span>
-            </div>
-          </div>
-          <div class="label muted" style="font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;font-weight:700;margin-bottom:6px">Computed diff</div>
-          <ul class="diff-list">${changed || "<li class=\"muted\">no changed files</li>"}</ul>
-          <div class="tag-row">${tags.join("") || '<span class="tag good">no manipulation detected</span>'}</div>
-          <p class="micro">${esc(attempt.outcome)}</p>
-        </div>
-        <div class="attempt-col">
-          <dl class="evidence-grid">${evidence}</dl>
-          <div class="attempt-actions">
-            <button class="btn ghost small" data-report="${attempt.attempt}">View full signed report</button>
-          </div>
-        </div>
-      </div>
-    </article>`;
-}
-
-function renderAttempts(run) {
-  $("attempts").innerHTML = run.attempts.map(renderAttempt).join("");
-}
-
-function renderPayment(run) {
-  const payment = run.payment;
-  const paid = payment.state === "Paid";
-  $("payment-chip").textContent = paid ? "settled" : payment.state;
-  $("payment-chip").className = `chip ${paid ? "good" : "warn"}`;
-  const steps = ["Verified", "PaymentPending", "Paid"];
-  $("payment-pipeline").innerHTML = steps
-    .map(
-      (step) =>
-        `<div class="step ${paid ? "done" : step === payment.state ? "active" : ""}">${esc(step)}</div>`,
-    )
-    .join("");
-  $("payment-facts").innerHTML = [
-    fact("Approved by", run.approval.approved_by),
-    fact("Budget", near(payment.budget)),
-    fact("Paid at block", payment.paid_at_block === null ? "—" : String(payment.paid_at_block)),
-    fact("Receipt", payment.receipt_id),
-    fact("Execution mode", payment.mode),
-  ].join("");
-  $("payment-note").textContent = payment.note;
-}
-
-function renderEvents(run) {
-  $("event-list").innerHTML = run.events
-    .map(
-      (event) => `
-      <li>
-        <span class="block">#${esc(event.block)}</span>
-        <span><span class="type">${esc(event.type)}</span><br /><span class="detail">${esc(event.detail)}</span></span>
-      </li>`,
-    )
-    .join("");
-}
-
-function renderVerdict(run) {
-  const first = run.attempts[0];
-  const blocked = first.chain_status === "Rejected";
-  $("verdict-title").textContent = blocked
-    ? "The worker reported success. CALIPER refused to pay."
-    : "Independent acceptance completed.";
-  $("verdict-copy").textContent =
-    `Attempt 1 claimed success, but the runner found ${first.report.protected_violations.length} protected-file violation(s) and reran the pinned suite against the actual source. ` +
-    `Attempt 2 fixed the source and passed. Payment is ${run.payment.state.toLowerCase()} only after the transfer callback.`;
-  $("verdict-state").textContent = blocked ? "Payment blocked, then verified" : run.payment.state;
-  $("verdict-eyebrow").textContent = `run ${run.run_id}`;
-}
-
-function renderRun(run) {
-  $("idle").hidden = true;
-  $("run-view").hidden = false;
-  $("raw-panel").hidden = true;
-  setMode(run);
-  $("hero-status").textContent = `Loaded ${run.mode} run ${run.run_id}. Evidence is inspectable below.`;
-  renderVerdict(run);
-  renderTask(run);
-  renderMarket(run);
-  renderRoles(run);
-  renderAuthority(run);
-  renderIntegrity(run);
-  renderAttempts(run);
-  renderPayment(run);
-  renderEvents(run);
+    state.market?.note ??
+    "Deterministic commit/reveal simulation. Not a private auction; the contract records the transcript hash.";
 }
 
 async function loadState() {
   try {
-    const response = await fetch("/api/state", { cache: "no-store" });
-    const state = await response.json();
-    if (state.mode === "idle") showIdle();
-    else renderRun(state);
-  } catch (error) {
-    $("hero-status").textContent = `Could not load state: ${error.message}`;
-    showIdle();
-  }
-}
-
-async function runDemo() {
-  const buttons = [$("run-btn"), $("hero-run-btn")];
-  for (const button of buttons) {
-    button.disabled = true;
-    button.textContent = "Running independent verification…";
-  }
-  $("hero-status").textContent = "Sealing bids, running the pinned suite, checking signatures…";
-  try {
-    const response = await fetch("/api/run", { method: "POST", cache: "no-store" });
-    const state = await response.json();
-    if (!response.ok) throw new Error(state.error ?? "demo failed");
-    renderRun(state);
-    document.getElementById("run-view").scrollIntoView({ behavior: "smooth", block: "start" });
-  } catch (error) {
-    $("hero-status").textContent = `Demo failed: ${error.message}`;
-  } finally {
-    for (const button of buttons) {
-      button.disabled = false;
-      button.textContent = button.id === "run-btn" ? "Run adversarial demo" : "Watch the adversarial loop";
+    const state = await api("/api/state");
+    setMode(state.mode ?? "local-simulation", state.step);
+    if (state.step === "idle") {
+      showView("#view-idle");
+      return;
     }
-  }
-}
-
-async function resetDemo() {
-  await fetch("/api/reset", { method: "POST" });
-  showIdle();
-  window.scrollTo({ top: 0, behavior: "smooth" });
-}
-
-async function showReport(attempt) {
-  const panel = $("raw-panel");
-  $("raw-title").textContent = `Attempt ${attempt} verification report`;
-  $("raw-json").textContent = "Loading…";
-  panel.hidden = false;
-  try {
-    const response = await fetch(`/api/report/attempt-${attempt}-report.json`, { cache: "no-store" });
-    const report = await response.json();
-    $("raw-json").textContent = JSON.stringify(report, null, 2);
+    renderTask(state);
+    switch (state.step) {
+      case "task_posted":
+        showView("#view-bids");
+        renderBids(state);
+        break;
+      case "bids_open":
+        showView("#view-bids");
+        renderBids(state);
+        break;
+      case "winner_selected":
+        showView("#view-deliver");
+        break;
+      case "delivered":
+        showView("#view-verify");
+        break;
+      case "verified":
+        renderDecision(state);
+        showView("#view-decide");
+        break;
+      case "rejected":
+        renderDecision(state);
+        showView("#view-decide");
+        break;
+      case "settled":
+        showView("#evidence");
+        renderEvidence(state);
+        break;
+      default:
+        showView("#view-idle");
+    }
   } catch (error) {
-    $("raw-json").textContent = `Could not load report: ${error.message}`;
+    console.error(error);
+    showView("#view-idle");
   }
-  panel.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-$("run-btn").addEventListener("click", runDemo);
-$("hero-run-btn").addEventListener("click", runDemo);
-$("reset-btn").addEventListener("click", resetDemo);
-$("raw-close").addEventListener("click", () => {
-  $("raw-panel").hidden = true;
+function renderDecision(state) {
+  const last = state.attempts?.[state.attempts.length - 1];
+  const title = $("decide-title");
+  const content = $("decision-content");
+  const actions = $("decision-actions");
+
+  if (!last) {
+    title.textContent = "Verification result";
+    content.innerHTML = "<p>No verification result available.</p>";
+    actions.innerHTML = "";
+    return;
+  }
+
+  const blocked = last.chain_status === "Rejected";
+  const exhausted = last.chain_status === "Exhausted";
+
+  title.textContent = blocked
+    ? "Worker claim rejected — payment blocked"
+    : exhausted
+    ? "Exhausted — no attempts remain"
+    : "Verification passed — payment due";
+
+  const report = last.report || {};
+  const violations = report.protected_violations || [];
+  const weak = report.manipulation?.weakened_assertions || [];
+  const disabled = report.manipulation?.disabled_ci || [];
+
+  content.innerHTML = `
+    <div class="verdict-card ${blocked || exhausted ? "blocked" : "passed"}">
+      <div class="verdict-head">
+        <span class="status-dot"></span>
+        <strong>${blocked ? "REJECTED" : exhausted ? "EXHAUSTED" : "VERIFIED"}</strong>
+      </div>
+      <p>${last.outcome}</p>
+      ${violations.length ? `<p><strong>Protected-file violations:</strong> ${violations.join(", ")}</p>` : ""}
+      ${weak.length ? `<p><strong>Weakened assertions:</strong> ${weak.join(", ")}</p>` : ""}
+      ${disabled.length ? `<p><strong>Disabled CI:</strong> ${disabled.join(", ")}</p>` : ""}
+      <p>Test exit: ${report.test_exit_code ?? "—"} &nbsp;|&nbsp; CI exit: ${report.ci_exit_code ?? "—"}</p>
+      <p>Artifact matches claim: ${report.attestation?.deliverable_matches_claim ?? "—"}</p>
+      <p>Protected files clean: ${report.attestation?.protected_files_clean ?? "—"}</p>
+    </div>
+  `;
+
+  actions.innerHTML = "";
+  if (blocked && state.step === "rejected") {
+    actions.innerHTML += `
+      <button class="btn primary" id="req-changes-btn">Request changes (reopen correction)</button>
+    `;
+  }
+  if (state.step === "verified") {
+    actions.innerHTML += `
+      <button class="btn primary" id="settle-btn">Release payment to worker</button>
+    `;
+  }
+  if (exhausted) {
+    actions.innerHTML += `<p class="micro">No attempts remain. The commitment is released to the coordinator.</p>`;
+  }
+}
+
+function renderEvidence(state) {
+  const attemptsEl = $("attempts");
+  const integrityEl = $("integrity-list");
+  attemptsEl.innerHTML = "";
+  integrityEl.innerHTML = "";
+
+  if (!state.attempts || state.attempts.length === 0) {
+    attemptsEl.innerHTML = "<p class=" + '"muted"' + ">No attempts recorded.</p>";
+    return;
+  }
+
+  for (const attempt of state.attempts) {
+    const report = attempt.report || {};
+    const blocked = attempt.chain_status === "Rejected";
+    const weak = report.manipulation?.weakened_assertions || [];
+    const disabled = report.manipulation?.disabled_ci || [];
+    const deleted = report.manipulation?.deleted_tests || [];
+
+    const tags = [
+      ...weak.map((e) => `<span class="tag bad">${esc(e)}</span>`),
+      ...disabled.map((e) => `<span class="tag bad">${esc(e)}</span>`),
+      ...deleted.map((e) => `<span class="tag bad">deleted ${esc(e)}</span>`),
+    ];
+
+    attemptsEl.innerHTML += `
+      <article class="attempt ${blocked ? "blocked" : "passed"}">
+        <div class="attempt-head">
+          <div>
+            <p class="eyebrow">Attempt ${attempt.attempt} · ${esc(attempt.artifact)} artifact</p>
+            <h3>${blocked ? "Worker claim rejected" : "Correction accepted"}</h3>
+          </div>
+          ${statusChip(attempt.chain_status, blocked ? "bad" : "good")}
+        </div>
+        <div class="attempt-body">
+          <div class="attempt-col">
+            <div class="claim-box">
+              <div class="label">Worker's own claim</div>
+              <p>“${esc(attempt.worker_claim.summary)}”</p>
+              <div class="tag-row">
+                <span class="tag ${attempt.worker_claim.passed ? "good" : "bad"}">claimed ${attempt.worker_claim.passed ? "PASS" : "FAIL"}</span>
+                <span class="tag">${esc(attempt.worker_claim.claimed_by)}</span>
+              </div>
+            </div>
+            <p class="micro">${esc(attempt.outcome)}</p>
+          </div>
+          <div class="attempt-col">
+            <dl class="evidence-grid">
+              <div><dt>Test exit</dt><dd>${report.test_exit_code ?? "—"}</dd></div>
+              <div><dt>CI exit</dt><dd>${report.ci_exit_code ?? "—"}</dd></div>
+              <div><dt>Artifact matches claim</dt><dd>${report.attestation?.deliverable_matches_claim ?? "—"}</dd></div>
+              <div><dt>Protected files clean</dt><dd>${report.attestation?.protected_files_clean ?? "—"}</dd></div>
+              <div><dt>Passed</dt><dd>${report.attestation?.passed ?? "—"}</dd></div>
+              <div><dt>Report digest</dt><dd class="mono">${short(report.attestation?.report_digest, 22, 10)}</dd></div>
+            </dl>
+            <div class="tag-row">${tags.join("") || '<span class="tag good">no manipulation detected</span>'}</div>
+            <button class="btn ghost small" data-report="${attempt.attempt}">View full signed report</button>
+          </div>
+        </div>
+      </article>`;
+  }
+
+  const last = state.attempts[state.attempts.length - 1];
+  if (last) {
+    const checks = [
+      ["Market transcript hash matches the job record", state.integrity?.market_transcript_hash_matches_job],
+      ["Selected worker unchanged after failure", state.integrity?.selected_worker_unchanged_after_failure],
+      ["Reports bound to current attempt", state.integrity?.attempts_bound_to_current_artifact],
+      ["Payment required a transfer callback", state.integrity?.payment_requires_callback],
+      ["Settlement equals winning bid", state.integrity?.settlement_amount_equals_winning_bid],
+      ["Release is permissionless after verification", state.integrity?.payment_permissionless_after_verification],
+      ["Verified job cannot be cancelled", state.integrity?.coordinator_cannot_cancel_verified_job],
+    ];
+    integrityEl.innerHTML = checks
+      .map(
+        ([label, ok]) =>
+          `<li class="${ok ? "" : "fail"}">${esc(label)}</li>`,
+      )
+      .join("");
+  }
+}
+
+// ---------- Event wiring ----------
+$("start-btn").addEventListener("click", () => {
+  showView("#view-post-task");
 });
 
-document.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-report]");
-  if (button) showReport(Number(button.dataset.report));
+$("back-to-idle").addEventListener("click", () => {
+  showView("#view-idle");
 });
 
+$("task-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const btn = $("task-form").querySelector('button[type="submit"]');
+  btn.disabled = true;
+  btn.textContent = "Posting task…";
+  try {
+    const budgetNear = Number($("task-budget").value);
+    const maxBudget = String(Math.round(budgetNear * 1e24));
+    await api("/api/task", "POST", {
+      title: $("task-title").value,
+      acceptance_criteria: $("task-criteria").value,
+      protected_files: ["tests/**", "ci/**"],
+      max_budget: maxBudget,
+    });
+    await loadState();
+  } catch (error) {
+    alert(`Failed to post task: ${error.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Post task and open bidding";
+  }
+});
+
+$("back-to-task").addEventListener("click", async () => {
+  await loadState();
+});
+
+$("bids-table").addEventListener("click", async (event) => {
+  const selectBtn = event.target.closest("[data-select]");
+  const bidBtn = event.target.closest("[data-bid]");
+  if (selectBtn) {
+    try {
+      await api("/api/select", "POST", { worker: selectBtn.dataset.select });
+      await loadState();
+    } catch (error) {
+      alert(`Failed to select: ${error.message}`);
+    }
+    return;
+  }
+  if (bidBtn) {
+    const [worker, amount] = bidBtn.dataset.bid.split("|");
+    try {
+      await api("/api/bid", "POST", { worker, amount });
+      await loadState();
+    } catch (error) {
+      alert(`Failed to place bid: ${error.message}`);
+    }
+    return;
+  }
+});
+
+$("back-to-bids").addEventListener("click", async () => {
+  await loadState();
+});
+
+$("deliver-btn").addEventListener("click", async () => {
+  const artifact = document.querySelector('input[name="artifact"]:checked')?.value;
+  if (!artifact) {
+    alert("Select a submission type");
+    return;
+  }
+  const btn = $("deliver-btn");
+  btn.disabled = true;
+  btn.textContent = "Submitting…";
+  try {
+    await api("/api/deliver", "POST", {
+      artifact,
+      worker: "worker-eve.local",
+      summary: artifact === "tampered"
+        ? "Updated the flaky billing expectation and the CI check; all reported checks are green."
+        : "Fixed src/auth.js so billing requires the admin role. The pinned suite and CI check pass unmodified.",
+    });
+    await loadState();
+  } catch (error) {
+    alert(`Failed to deliver: ${error.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Submit deliverable";
+  }
+});
+
+$("back-to-deliver").addEventListener("click", async () => {
+  await loadState();
+});
+
+$("verify-btn").addEventListener("click", async () => {
+  const btn = $("verify-btn");
+  btn.disabled = true;
+  btn.textContent = "Verifying…";
+  try {
+    await api("/api/verify", "POST");
+    await loadState();
+  } catch (error) {
+    alert(`Verification failed: ${error.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Run independent verification";
+  }
+});
+
+$("back-to-decide").addEventListener("click", async () => {
+  await loadState();
+});
+
+document.addEventListener("click", async (event) => {
+  const reqChanges = event.target.closest("#req-changes-btn");
+  const settle = event.target.closest("#settle-btn");
+  const reportBtn = event.target.closest("[data-report]");
+  const rawClose = event.target.closest("#raw-close");
+
+  if (reqChanges) {
+    try {
+      await api("/api/request-changes", "POST");
+      await loadState();
+    } catch (error) {
+      alert(`Failed to request changes: ${error.message}`);
+    }
+    return;
+  }
+  if (settle) {
+    try {
+      await api("/api/settle", "POST");
+      await loadState();
+    } catch (error) {
+      alert(`Failed to settle: ${error.message}`);
+    }
+    return;
+  }
+  if (reportBtn) {
+    const panel = document.querySelector(".raw-panel");
+    const rawJson = $("raw-json");
+    panel.hidden = false;
+    rawJson.textContent = "Loading…";
+    try {
+      const report = await api(`/api/report/attempt-${reportBtn.dataset.report}-report.json`);
+      rawJson.textContent = JSON.stringify(report, null, 2);
+    } catch (error) {
+      rawJson.textContent = `Could not load report: ${error.message}`;
+    }
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+  if (rawClose) {
+    document.querySelector(".raw-panel").hidden = true;
+    return;
+  }
+});
+
+$("reset-btn").addEventListener("click", async () => {
+  try {
+    await api("/api/reset", "POST");
+    await loadState();
+  } catch (error) {
+    alert(`Reset failed: ${error.message}`);
+  }
+});
+
+// ---------- Bootstrap ----------
 loadState();

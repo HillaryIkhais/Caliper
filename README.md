@@ -88,6 +88,10 @@ Verified view results at the time of writing:
 
 **Interpretation:** the account, bytecode, and `init` are real. The job lifecycle is not. See `near/evidence/testnet-lifecycle.md` for the exact evidence boundary and `near/scripts/testnet-lifecycle.sh` for an executable lifecycle procedure that has **not** been run.
 
+## Prior work
+
+**Prior work:** The adversarial test suite (21 off-chain tests), the formal model (41 contract tests), and the canonical attestation format predate the hackathon. The testnet deployment, recorded scenario, and independent verification fixtures were completed during the event window. All commit metadata is `HillaryIkhais <ikhaishillary@gmail.com>`. The `docs/hackathon-proof-and-narrative.md` document provides a full proof table and claim-audit labeling for judge review.
+
 ## How to run (judge path)
 
 ### 1. Run the complete adversarial demonstration (no wallet, no network)

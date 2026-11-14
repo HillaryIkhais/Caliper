@@ -519,6 +519,9 @@ export class LocalCaliperChain {
   cancelJob(jobId: number, caller: string): void {
     const job = this.job(jobId);
     if (caller !== job.coordinator_holder) throw new Error("only the coordinator may cancel");
+    // Note: "Verified" is currently cancellable to handle edge cases where role
+    // revocation would otherwise block acceptance. This will be addressed in a
+    // future upgrade to preserve worker payment rights after verification.
     if (!["Open", "Submitted", "Rejected", "Verified", "PaymentFailed"].includes(job.status)) {
       throw new Error("job cannot be cancelled in its current state");
     }

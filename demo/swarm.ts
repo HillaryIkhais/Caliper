@@ -145,18 +145,35 @@ export function runSwarm(): SwarmRun {
   );
 
   const market = buildMarketRound();
+
+  // getWinner returns the winning bid (lowest valid bid) from the market.
+  // The market.winner field only contains the worker account, not the amount.
+  // We need to find the winning bid from valid_bids.
+  const validBids = market.valid_bids;
+  if (validBids.length === 0) throw new Error("market has no valid bids");
+  const winningBid = validBids.reduce((min, bid) => {
+    return BigInt(bid.amount) < BigInt(min.amount) ? bid : min;
+  });
+  if (!winningBid) throw new Error("market winner is not a known worker");
+
   const winner = WORKERS.find((worker) => worker.account === market.winner);
   if (!winner) throw new Error("market winner is not a known worker");
   const workerNode = workerNodes.get(winner.account);
   if (!workerNode) throw new Error("winner has no authority node");
 
+  // The job budget should equal the winning bid amount.
+  // This ensures economic correctness: actual payment = actual agreed price.
+  // The market.max_budget is the coordinator's limit, but the job budget
+  // is what the worker actually gets if verification passes.
+  const settlementAmount = BigInt(winningBid.amount);
   const committedBeforeJob = chain.node(root).committed_to_children;
+
   const jobId = chain.createJob({
     coordinator_node: root,
     worker_node: workerNode,
     verifier_node: verifierNode,
     verifier_public_key: key.publicKeyHex,
-    budget: nearFromTenths(200n),
+    budget: settlementAmount.toString(),
     acceptance_criteria_hash: acceptanceCriteriaHash,
     acceptance_suite_hash: acceptanceSuiteHash,
     baseline_commit: manifest.baseline_commit,
@@ -301,7 +318,7 @@ export function runSwarm(): SwarmRun {
     authority: {
       root_node: chain.node(root),
       nodes: snapshot.nodes,
-      job_budget: nearFromTenths(200n),
+      job_budget: settlementAmount.toString(),
       coordinator_committed_before_job: committedBeforeJob,
       coordinator_committed_after_job: committedAfterJob,
       coordinator_available_after_job: coordinatorAvailableAfterJob,

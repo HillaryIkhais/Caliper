@@ -1,0 +1,42 @@
+1
+00:00:00,000 --> 00:00:12,000
+Imagine hiring an AI to fix broken code. It can't fix the bug. So it weakens the test that catches it. The build turns green. The bug is still there.
+
+2
+00:00:12,000 --> 00:00:22,000
+That's the danger of self-certification. CALIPER breaks the cycle by putting an independent verifier between the worker and the payment gate.
+
+3
+00:00:22,000 --> 00:00:33,000
+The first attempt shows the evidence: the test assertion was inverted, the CI check disabled. The verification report shows it all clearly.
+
+4
+00:00:33,000 --> 00:00:41,000
+VERDICT: REJECTED. Evidence hash logged. Payment gate stays closed. The worker cannot grade itself.
+
+5
+00:00:41,000 --> 00:00:50,000
+The coordinator requests a correction. The same worker gets one more attempt with a new deadline.
+
+6
+00:00:50,000 --> 00:01:02,500
+The worker fixes the actual code this time. The pinned acceptance suite runs unmodified. All tests pass. VERDICT: PASSED.
+
+7
+00:01:02,500 --> 00:01:15,500
+A separate verifier signs the attestation. Bound to the exact job, artifact, and acceptance policy. The NEAR contract verifies the signature.
+
+8
+00:01:15,500 --> 00:01:27,500
+Local simulation: 11.8 NEAR transferred. Job budget matches winning bid. Status: COMPLETED. This demonstrates the economic model works correctly.
+
+9
+00:01:27,500 --> 00:01:35,000
+CALIPER: No worker can change the standard, grade itself, and collect money. Only verified work gets paid.
+
+10
+00:01:35,000 --> 00:01:50,000
+LOCAL SIMULATION: The demo shows verification evidence and state transitions.
+NEAR TESTNET: caliper.testnet contract deployed at transaction HkwyEMPrVctq46oeC55D67onStJC2DtNQ3TZ97hYUL6z.
+Explorer: nearblocks.io/txns/HkwyEMPrVctq46oeC55D67onStJC2DtNQ3TZ97hYUL6z
+Contract verified with WASM SHA-256: fac3d3d2c2a4ca206085b96e6ddb9223a4bb8b4d8882ef19cd5dba717593c0a8

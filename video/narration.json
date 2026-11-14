@@ -1,0 +1,108 @@
+{
+  "voice": "en_US-lessac-medium",
+  "fps": 30,
+  "scenes": [
+    {
+      "id": "s1",
+      "index": 1,
+      "title": "The Threat",
+      "text": "Imagine hiring an AI to fix broken code. It can't fix the bug. So it weakens the test that catches it. The build turns green. The bug is still there.",
+      "duration": 12.0,
+      "cues": [
+        { "text": "Imagine hiring an AI to fix broken code.", "start": 0, "duration": 3.2 },
+        { "text": "It can't fix the bug.", "start": 3.4, "duration": 1.2 },
+        { "text": "So it weakens the test that catches it.", "start": 4.7, "duration": 2.8 },
+        { "text": "The build turns green.", "start": 7.6, "duration": 1.4 },
+        { "text": "The bug is still there.", "start": 9.1, "duration": 2.9 }
+      ]
+    },
+    {
+      "id": "s2",
+      "index": 2,
+      "title": "Market Selection",
+      "text": "Workers compete in a commit/reveal auction. Eve bids 11.8 NEAR - the lowest valid bid. The contract records the winner and reserves exactly that amount.",
+      "duration": 10.0,
+      "cues": [
+        { "text": "Workers compete in a commit/reveal auction.", "start": 0, "duration": 3.0 },
+        { "text": "Eve bids 11.8 NEAR - the lowest valid bid.", "start": 3.1, "duration": 3.5 },
+        { "text": "The contract records the winner and reserves exactly that amount.", "start": 6.7, "duration": 3.3 }
+      ]
+    },
+    {
+      "id": "s3",
+      "index": 3,
+      "title": "The Attack",
+      "text": "The selected worker submits a malicious artifact. It weakens the billing assertion and disables the CI check. It claims success.",
+      "duration": 10.0,
+      "cues": [
+        { "text": "The selected worker submits a malicious artifact.", "start": 0, "duration": 3.0 },
+        { "text": "It weakens the billing assertion and disables the CI check.", "start": 3.1, "duration": 4.0 },
+        { "text": "It claims success.", "start": 7.2, "duration": 2.8 }
+      ]
+    },
+    {
+      "id": "s4",
+      "index": 4,
+      "text": "Independent Verification",
+      "title": "Verification",
+      "text": "The runner recomputes the artifact hash, detects protected-file changes, restores the pinned suite, and reruns it. The verification fails.",
+      "duration": 11.0,
+      "cues": [
+        { "text": "The runner recomputes the artifact hash,", "start": 0, "duration": 2.5 },
+        { "text": "detects protected-file changes,", "start": 2.6, "duration": 2.5 },
+        { "text": "restores the pinned suite,", "start": 5.1, "duration": 2.5 },
+        { "text": "and reruns it. The verification fails.", "start": 7.6, "duration": 3.4 }
+      ]
+    },
+    {
+      "id": "s5",
+      "index": 5,
+      "title": "Correction",
+      "text": "The coordinator requests a correction. The same worker fixes the actual code without touching the tests. The verifier re-evaluates the genuine fix.",
+      "duration": 10.0,
+      "cues": [
+        { "text": "The coordinator requests a correction.", "start": 0, "duration": 2.8 },
+        { "text": "The same worker fixes the actual code without touching the tests.", "start": 2.9, "duration": 5.2 },
+        { "text": "The verifier re-evaluates the genuine fix.", "start": 8.1, "duration": 1.9 }
+      ]
+    },
+    {
+      "id": "s6",
+      "index": 6,
+      "title": "Accepted",
+      "text": "The verifier signs the passing evidence. The contract verifies the attestation. The job becomes Verified. Payment is now pending.",
+      "duration": 10.0,
+      "cues": [
+        { "text": "The verifier signs the passing evidence.", "start": 0, "duration": 3.0 },
+        { "text": "The contract verifies the attestation.", "start": 3.1, "duration": 2.8 },
+        { "text": "The job becomes Verified. Payment is now pending.", "start": 5.9, "duration": 4.1 }
+      ]
+    },
+    {
+      "id": "s7",
+      "index": 7,
+      "title": "Settlement",
+      "text": "The coordinator accepts, or the deadline expires. The contract initiates payment of 11.8 NEAR - exactly the winning bid. The transfer succeeds. Status: Paid.",
+      "duration": 11.0,
+      "cues": [
+        { "text": "The coordinator accepts, or the deadline expires.", "start": 0, "duration": 3.2 },
+        { "text": "The contract initiates payment of 11.8 NEAR - exactly the winning bid.", "start": 3.3, "duration": 5.0 },
+        { "text": "The transfer succeeds. Status: Paid.", "start": 8.3, "duration": 2.7 }
+      ]
+    },
+    {
+      "id": "s8",
+      "index": 8,
+      "title": "The Principle",
+      "text": "CALIPER. No worker can change the standard, grade itself, and collect money. Only verified work gets paid. This is enforceable on-chain.",
+      "duration": 10.0,
+      "cues": [
+        { "text": "CALIPER. No worker can change the standard,", "start": 0, "duration": 3.5 },
+        { "text": "grade itself, and collect money.", "start": 3.6, "duration": 2.8 },
+        { "text": "Only verified work gets paid.", "start": 6.4, "duration": 2.2 },
+        { "text": "This is enforceable on-chain.", "start": 8.6, "duration": 1.4 }
+      ]
+    }
+  ],
+  "totalSpeech": 84.0
+}

@@ -15,22 +15,29 @@ A coordinator hires an AI coding agent. The agent can't fix the bug, so it delet
 
 CALIPER separates work from verification:
 
-1. Coordinator posts a task and pins acceptance criteria + protected files + baseline commit before work begins.
-2. Workers submit commit/reveal bids; lowest valid bid wins (deterministic selection).
-3. Worker submits only an artifact hash — they cannot certify their own tests.
-4. An independent verifier reruns the **original pinned suite** against the actual artifact, computes diffs, checks protected files, and signs an Ed25519 attestation.
-5. Coordinator approves only if verification passed.
-6. NEAR releases payment only after the transfer callback confirms success.
+1. The coordinator posts a task and pins acceptance criteria, protected files, and the baseline commit before work begins.
+2. Workers submit commit/reveal bids in a deterministic **off-chain simulation**; the lowest valid bid is selected.
+3. The coordinator records the selected worker, the escrowed maximum budget, and the winning bid in the contract.
+4. The worker submits only an artifact hash — they cannot certify their own tests.
+5. An independent verifier reruns the **original pinned suite** against the actual artifact, computes diffs, checks protected files, and signs an Ed25519 attestation.
+6. Once verification passes, payment is a fixed obligation: `release_verified_payment` is permissionless, and the coordinator can neither cancel the job nor revoke the branch to avoid it.
+7. The contract pays **exactly the winning bid** and returns the unused escrow to the coordinator.
+8. `Paid` requires a successful transfer callback. `PaymentPending` never means paid.
+
+## What is and is not on-chain
+
+**On-chain:** authority attenuation, job escrow, evidence binding, signature checks, exact-bid settlement, callback-confirmed payment, revocation guards.
+
+**Off-chain simulation:** the bid market, nonces, winner selection, and the local chain used by the demo. The contract does not validate the auction or independently select the winner; it records the supplied transcript hash and the coordinator's selection.
+
+**Testnet status:** deployment and `init` are verified on `caliper.testnet`. The lifecycle has **not** been executed there: `get_root` is `null`, `get_total_allocated` is `"0"`, and `list_jobs` is `[]`. The deployed bytecode predates the corrected settlement code in this repository. A runnable, unexecuted lifecycle procedure is in `near/scripts/testnet-lifecycle.sh`.
 
 ## How to run it
 
 ### Option A: Local simulation (no wallet, no network, no signup)
 
 ```bash
-# 1. Install dependencies
 npm install
-
-# 2. Run the complete adversarial demonstration
 npm run demo
 ```
 
@@ -41,12 +48,19 @@ attempt 2: Verified — passed: genuine source fix accepted by the pinned suite
 payment: Paid
 ```
 
-### Option B: Verify live testnet contract
+The demo is a local simulation, not a sequence of testnet transactions.
 
-The contract is deployed on NEAR testnet at `caliper.testnet`:
+### Option B: Verify the live testnet deployment
 
 ```bash
+near view caliper.testnet get_owner
+# "caliper.testnet"
+
 near view caliper.testnet get_total_allocated
+# "0"
+
+near view caliper.testnet list_jobs
+# []
 ```
 
 Transaction: https://testnet.nearblocks.io/txns/HkwyEMPrVctq46oeC55D67onStJC2DtNQ3TZ97hYUL6z
@@ -54,22 +68,31 @@ Transaction: https://testnet.nearblocks.io/txns/HkwyEMPrVctq46oeC55D67onStJC2DtN
 ### Option C: Run tests
 
 ```bash
-npm test          # 39 contract tests + 20 off-chain tests
-npm run verify    # exported-state fixtures
+npm test
+npm run verify
 ```
+
+### Option D: Require an OS sandbox for execution
+
+```bash
+CALIPER_SANDBOX=os npm run demo
+```
+
+This uses macOS `sandbox-exec` or Linux `bwrap` and fails closed if neither is available. Without it, the runner is process-only and is not a security boundary.
 
 ## Track fit
 
-CALIPER directly targets Track 05 — AI Swarms:
-- **Coordination market**: Workers bid via commit/reveal; contract selects lowest valid bid.
-- **Collective purchasing**: Coordinator allocates budget from an authority tree; job commitment isolates funds.
-- **Intent-based settlement**: Verifier attests to artifact quality; NEAR pays only on verified settlement.
+CALIPER targets Track 05 — AI Swarms:
+
+- **Coordination market**: Workers bid via commit/reveal in a deterministic off-chain simulation; the lowest valid bid is selected and recorded.
+- **Collective purchasing**: The coordinator allocates budget from an authority tree; job escrow isolates funds and returns the unused remainder.
+- **Intent-based settlement**: The verifier attests to artifact quality; NEAR pays exactly the winning bid only on verified, callback-confirmed settlement.
 
 ## Submission details
 
 - **Repository:** https://github.com/HillaryIkhais/Caliper
 - **Demo:** Local simulation via `npm run demo` (video attached to submission post)
-- **Live contract:** `caliper.testnet` on NEAR testnet
+- **Live contract:** `caliper.testnet` on NEAR testnet (deployment + `init` verified; lifecycle unexecuted)
 - **Team size:** 1
 - **License:** MIT
 - **Deadline:** November 14, 2026 at 23:59 UTC

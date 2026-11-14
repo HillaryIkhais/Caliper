@@ -13,6 +13,11 @@ pub type JobId = u64;
 pub const ATTESTATION_VERSION: &str = "caliper-attestation-v2";
 /// The demonstration allows the initial attempt plus one correction.
 pub const MAX_JOB_ATTEMPTS: u32 = 2;
+/// A submitted job may be cancelled by the coordinator only after this many
+/// blocks without a verification result. This stops a stalled verifier from
+/// locking the escrowed budget forever without letting the coordinator cancel
+/// prompt verification.
+pub const VERIFICATION_TIMEOUT_BLOCKS: u64 = 1_000;
 
 
 /// One node in the authority tree: an agent (root owner, coordinator, or child).
@@ -95,7 +100,7 @@ pub enum JobStatus {
     Open,
     /// Worker submitted a deliverable, awaiting independent verification.
     Submitted,
-    /// Verification passed. The coordinator may now approve payment.
+    /// Verification passed. Payment is now owed and any account may release it.
     Verified,
     /// The coordinator approved payment and the transfer is in flight.
     PaymentPending,
@@ -174,8 +179,13 @@ pub struct Job {
     pub verifier_holder: AccountId,
     /// Ed25519 public key pinned before work begins.
     pub verifier_public_key: String,
-    /// Budget allocated to this job (yoctoNEAR).
+    /// Maximum budget escrowed for this job (yoctoNEAR). The coordinator commits
+    /// this amount at creation. On settlement, the unused remainder returns to
+    /// the coordinator's available allocation.
     pub budget: Balance,
+    /// Exact amount paid to the worker on success: the agreed winning bid
+    /// (yoctoNEAR). Pinned at creation and paid verbatim by the contract.
+    pub winning_bid: Balance,
     /// Hash of the acceptance criteria document fixed before work began.
     pub acceptance_criteria_hash: String,
     /// Hash of the complete pinned acceptance policy, including the suite, commands,
@@ -775,6 +785,27 @@ impl Contract {
         let mut to_revoke = vec![node_id];
         to_revoke.extend(descendants);
 
+        // Revocation must not destroy a payment obligation or sabotage an
+        // in-flight verification. A verified payment depends only on the
+        // coordinator branch staying live; a submitted job needs all three roles
+        // to reach a verdict. The timeout in `cancel_job` is the escape hatch for
+        // a verifier that never answers.
+        for job in self.jobs.values() {
+            let coordinator_hit = to_revoke.contains(&job.coordinator_node);
+            let role_hit = to_revoke.contains(&job.worker_node)
+                || to_revoke.contains(&job.verifier_node);
+            if matches!(
+                job.status,
+                JobStatus::Verified | JobStatus::PaymentPending | JobStatus::PaymentFailed
+            ) && coordinator_hit
+            {
+                panic!("cannot revoke a branch with an outstanding verified payment");
+            }
+            if matches!(job.status, JobStatus::Submitted) && (coordinator_hit || role_hit) {
+                panic!("cannot revoke a branch with a job awaiting verification");
+            }
+        }
+
         // Funds already spent anywhere in the branch were paid out, so they cannot
         // be reissued when the branch is revoked. Roll them up into the parent as
         // spent while releasing only the unspent remainder of the commitment.
@@ -828,6 +859,7 @@ impl Contract {
         verifier_node: AuthorityId,
         verifier_public_key: String,
         budget: U128,
+        winning_bid: U128,
         acceptance_criteria_hash: String,
         acceptance_suite_hash: String,
         baseline_commit: String,
@@ -837,6 +869,7 @@ impl Contract {
         let caller = env::predecessor_account_id();
         let block_height = env::block_height();
         let amount: Balance = budget.into();
+        let bid: Balance = winning_bid.into();
 
         let coordinator = self.node(coordinator_node).clone();
         let worker = self.node(worker_node).clone();
@@ -897,6 +930,8 @@ impl Contract {
             amount <= self.available(coordinator_node),
             "job budget exceeds coordinator's uncommitted allocation"
         );
+        assert!(bid > 0, "winning bid must be positive");
+        assert!(bid <= amount, "winning bid exceeds the escrowed budget");
 
         let public_key: [u8; 32] =
             decode_hex_array(&verifier_public_key, "verifier public key");
@@ -914,6 +949,7 @@ impl Contract {
             verifier_holder: verifier.holder.clone(),
             verifier_public_key: hex::encode(public_key),
             budget: amount,
+            winning_bid: bid,
             acceptance_criteria_hash,
             acceptance_suite_hash,
             baseline_commit,
@@ -1092,15 +1128,30 @@ impl Contract {
         self.jobs.insert(&job_id, &job);
     }
 
-    /// Approve a verified job and initiate payment. The job enters PaymentPending;
-    /// only the transfer callback can move it to Paid.
+    /// Coordinator approves a verified job and initiates payment. The job enters
+    /// PaymentPending; only the transfer callback can move it to Paid.
     pub fn accept_job(&mut self, job_id: JobId) {
         let caller = env::predecessor_account_id();
+        let job = self.jobs.get(&job_id).expect("job not found");
+        assert_eq!(caller, job.coordinator_holder, "only the coordinator may accept");
+        self.initiate_verified_payment(job_id);
+    }
+
+    /// Release payment for a job that has already passed independent verification.
+    /// Verification fixes the payment obligation, so this method is permissionless:
+    /// the worker, the verifier, or any third party may call it. A coordinator can
+    /// therefore neither cancel a Verified job nor withhold settlement indefinitely.
+    pub fn release_verified_payment(&mut self, job_id: JobId) {
+        self.initiate_verified_payment(job_id);
+    }
+
+    /// Shared settlement path. Only the coordinator's authority is revalidated:
+    /// worker and verifier authority may have been revoked after verification
+    /// without extinguishing the worker's right to be paid.
+    fn initiate_verified_payment(&mut self, job_id: JobId) {
         let block_height = env::block_height();
 
         let mut job = self.jobs.get(&job_id).expect("job not found");
-        assert_eq!(caller, job.coordinator_holder, "only the coordinator may accept");
-        self.assert_job_roles_valid(&job, block_height);
         assert!(
             matches!(job.status, JobStatus::Verified | JobStatus::PaymentFailed),
             "job is not verified or retryable"
@@ -1112,6 +1163,10 @@ impl Contract {
         assert!(
             !job.tampering_detected,
             "tampering detected: worker modified protected files"
+        );
+        assert!(
+            self.is_authority_valid(job.coordinator_node, block_height),
+            "coordinator authority is revoked or expired"
         );
 
         let record = job
@@ -1138,7 +1193,7 @@ impl Contract {
             "stale attestation suite"
         );
 
-        let budget = job.budget;
+        let amount = job.winning_bid;
         let worker_account = job.worker_holder.clone();
 
         job.status = JobStatus::PaymentPending;
@@ -1146,7 +1201,7 @@ impl Contract {
         self.jobs.insert(&job_id, &job);
 
         Promise::new(worker_account)
-            .transfer(NearToken::from_yoctonear(budget))
+            .transfer(NearToken::from_yoctonear(amount))
             .then(Self::ext(env::current_account_id()).on_job_payment(job_id))
             .detach();
     }
@@ -1168,9 +1223,11 @@ impl Contract {
                     .committed_to_children
                     .checked_sub(job.budget)
                     .expect("job commitment underflow");
+                // Only the winning bid is spent. The unused portion of the
+                // escrowed budget stays available to the coordinator.
                 coordinator.spent = coordinator
                     .spent
-                    .checked_add(job.budget)
+                    .checked_add(job.winning_bid)
                     .expect("overflow");
                 self.set_node(job.coordinator_node, coordinator);
 
@@ -1188,24 +1245,29 @@ impl Contract {
         self.jobs.insert(&job_id, &job);
     }
 
-    /// Coordinator may cancel an unpaid job. Committed budget is released.
+    /// Coordinator may cancel a job that has not passed verification. Committed
+    /// budget is released. A Verified job is a fixed payment obligation and is
+    /// deliberately not cancellable; use `release_verified_payment` instead.
+    /// A Submitted job becomes cancellable only after `VERIFICATION_TIMEOUT_BLOCKS`
+    /// so a stalled verifier cannot lock escrowed funds forever.
     pub fn cancel_job(&mut self, job_id: JobId) {
         let caller = env::predecessor_account_id();
         let block_height = env::block_height();
 
         let mut job = self.jobs.get(&job_id).expect("job not found");
         assert_eq!(caller, job.coordinator_holder, "only the coordinator may cancel");
-        assert!(
-            matches!(
-                job.status,
-                JobStatus::Open
-                    | JobStatus::Submitted
-                    | JobStatus::Rejected
-                    | JobStatus::Verified
-                    | JobStatus::PaymentFailed
-            ),
-            "job cannot be cancelled in its current state"
-        );
+        let cancellable = match job.status {
+            JobStatus::Open | JobStatus::Rejected => true,
+            JobStatus::Submitted => {
+                block_height
+                    >= job
+                        .submitted_at
+                        .unwrap_or(block_height)
+                        .saturating_add(VERIFICATION_TIMEOUT_BLOCKS)
+            }
+            _ => false,
+        };
+        assert!(cancellable, "job cannot be cancelled in its current state");
         assert!(
             self.is_authority_valid(job.coordinator_node, block_height),
             "coordinator authority is revoked or expired"
@@ -1375,6 +1437,7 @@ mod tests {
             verifier,
             public_key_hex(&key),
             U128(20 * UNIT),
+            U128(12 * UNIT),
             "sha256:acceptance-criteria-v1".to_string(),
             "sha256:suite-v1".to_string(),
             "commit-baseline-abc123".to_string(),
@@ -1829,6 +1892,7 @@ mod tests {
             worker,
             key,
             U128(10),
+            U128(10),
             "criteria".to_string(),
             "suite".to_string(),
             "baseline".to_string(),
@@ -1855,6 +1919,7 @@ mod tests {
             verifier,
             key,
             U128(10),
+            U128(10),
             "criteria".to_string(),
             "suite".to_string(),
             "baseline".to_string(),
@@ -1879,6 +1944,7 @@ mod tests {
             verifier,
             key,
             U128(10),
+            U128(10),
             "criteria".to_string(),
             "suite".to_string(),
             "baseline".to_string(),
@@ -1902,6 +1968,7 @@ mod tests {
             worker,
             root,
             key,
+            U128(10),
             U128(10),
             "criteria".to_string(),
             "suite".to_string(),
@@ -1938,36 +2005,25 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "verifier authority is revoked or expired")]
+    #[should_panic(expected = "cannot revoke a branch with a job awaiting verification")]
     fn revoked_verifier_cannot_attest() {
         let mut f = setup_job();
         context(carol(), 0);
         f.contract.submit_deliverable(f.job, "sha256:artifact".to_string());
-        let attestation = make_attestation(
-            &f.contract,
-            f.job,
-            &f.key,
-            1,
-            "sha256:artifact",
-            true,
-            0,
-            true,
-        );
+        // Once a job is Submitted, revoking the verifier would sabotage
+        // in-flight verification. The revocation itself is blocked; a revoked
+        // verifier can therefore never record attestation for this job.
         context(owner(), 0);
         f.contract.revoke(f.verifier);
-        context(dave(), 0);
-        f.contract.record_independent_verification(f.job, attestation);
     }
 
     #[test]
-    #[should_panic(expected = "coordinator authority is revoked or expired")]
-    fn revoked_coordinator_cannot_accept() {
+    #[should_panic(expected = "cannot revoke a branch with an outstanding verified payment")]
+    fn coordinator_with_verified_payment_cannot_be_revoked() {
         let mut f = setup_job();
         submit_and_verify_pass(&mut f, "sha256:artifact");
         context(owner(), 0);
         f.contract.revoke(f.root);
-        context(bob(), 0);
-        f.contract.accept_job(f.job);
     }
 
     // ---------- attestation binding ----------
@@ -2255,7 +2311,7 @@ mod tests {
         let job = f.contract.get_job(f.job).unwrap();
         assert!(matches!(job.status, JobStatus::Paid));
         assert!(job.paid_at.is_some());
-        assert_eq!(f.contract.get_node(f.root).unwrap().spent, job.budget);
+        assert_eq!(f.contract.get_node(f.root).unwrap().spent, job.winning_bid);
     }
 
     #[test]
@@ -2289,7 +2345,7 @@ mod tests {
 
         let job = f.contract.get_job(f.job).unwrap();
         assert!(matches!(job.status, JobStatus::Paid));
-        assert_eq!(f.contract.get_node(f.root).unwrap().spent, job.budget);
+        assert_eq!(f.contract.get_node(f.root).unwrap().spent, job.winning_bid);
     }
 
     #[test]
@@ -2346,27 +2402,51 @@ mod tests {
     }
 
     #[test]
-    fn verified_job_can_be_cancelled_after_a_role_is_revoked() {
+    #[should_panic(expected = "job cannot be cancelled in its current state")]
+    fn verified_job_cannot_be_cancelled() {
         let mut f = setup_job();
         submit_and_verify_pass(&mut f, "sha256:artifact");
-        assert!(matches!(
-            f.contract.get_job(f.job).unwrap().status,
-            JobStatus::Verified
-        ));
-
-        // The verifier or worker can be revoked before the coordinator accepts.
-        // Without a cancellable Verified state the job budget would stay committed
-        // forever because accept_job revalidates every role.
-        context(bob(), 0);
-        f.contract.revoke(f.worker);
         context(bob(), 0);
         f.contract.cancel_job(f.job);
+    }
+
+    #[test]
+    fn worker_revocation_does_not_block_permissionless_settlement() {
+        let mut f = setup_job();
+        submit_and_verify_pass(&mut f, "sha256:artifact");
+
+        // Worker authority can be revoked after verification; the payment right
+        // is bound to the holder account, not to a live authority node.
+        context(bob(), 0);
+        f.contract.revoke(f.worker);
+
+        // Any third party can release the verified payment.
+        context(erin(), 0);
+        f.contract.release_verified_payment(f.job);
+        context_with_promise(CALIPER.parse().unwrap(), PromiseResult::Successful(vec![]));
+        f.contract.on_job_payment(f.job);
 
         let job = f.contract.get_job(f.job).unwrap();
-        assert!(matches!(job.status, JobStatus::Cancelled));
-        assert!(job.resolved_at.is_some());
+        assert!(matches!(job.status, JobStatus::Paid));
+        assert_eq!(f.contract.get_node(f.root).unwrap().spent, job.winning_bid);
+    }
+
+    #[test]
+    fn settlement_pays_winning_bid_and_returns_unused_budget() {
+        let mut f = setup_job();
+        let committed_before = f.contract.get_node(f.root).unwrap().committed_to_children;
+        submit_and_verify_pass(&mut f, "sha256:artifact");
+
+        context(erin(), 0);
+        f.contract.release_verified_payment(f.job);
+        context_with_promise(CALIPER.parse().unwrap(), PromiseResult::Successful(vec![]));
+        f.contract.on_job_payment(f.job);
+
+        let job = f.contract.get_job(f.job).unwrap();
         let root = f.contract.get_node(f.root).unwrap();
-        assert_eq!(root.committed_to_children, 50 * UNIT);
+        assert_eq!(job.winning_bid, 12 * UNIT);
+        assert_eq!(root.spent, 12 * UNIT);
+        assert_eq!(root.committed_to_children, committed_before - job.budget);
     }
 
     #[test]

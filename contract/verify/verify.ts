@@ -69,6 +69,7 @@ interface Job {
     verifier_holder: AccountId;
     verifier_public_key: string;
     budget: Balance;
+    winning_bid: Balance;
     acceptance_criteria_hash: string;
     acceptance_suite_hash: string;
     baseline_commit: string;
@@ -327,6 +328,21 @@ function verify(state: State, currentBlock: number | null) {
         }
         if (job.attempt < 0 || job.attempt > job.max_attempts) {
             fail("job", `job ${job.id} attempt ${job.attempt} exceeds max ${job.max_attempts}`, undefined, undefined, job.id);
+        }
+
+        // Economic invariants: the coordinator escrows the maximum budget, the
+        // worker is paid exactly the winning bid, and the bid is bounded by the
+        // escrowed budget.
+        const budget = toBigInt(job.budget);
+        const winningBid = toBigInt(job.winning_bid);
+        if (budget <= BigInt(0)) {
+            fail("job", `job ${job.id} has a non-positive budget`, undefined, undefined, job.id);
+        }
+        if (winningBid <= BigInt(0)) {
+            fail("job", `job ${job.id} has a non-positive winning bid`, undefined, undefined, job.id);
+        }
+        if (winningBid > budget) {
+            fail("job", `job ${job.id} winning bid ${b2s(winningBid)} exceeds budget ${b2s(budget)}`, undefined, undefined, job.id);
         }
 
         // Job creation time ordering

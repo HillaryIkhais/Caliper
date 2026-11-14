@@ -51,7 +51,7 @@ test("complete adversarial scenario runs end to end", () => {
   assert.equal(corrected.report.ci_exit_code, 0);
   assert.deepEqual(corrected.report.protected_violations, []);
 
-  assert.equal(run.approval.approved_by, "coordinator.caliper.local");
+  assert.equal(run.approval.released_by, "worker-eve.local");
   assert.equal(run.payment.status, "PaymentPending");
   assert.equal(run.payment.state, "Paid");
   assert.equal(run.payment.simulated, true);
@@ -59,6 +59,12 @@ test("complete adversarial scenario runs end to end", () => {
   assert.equal(run.integrity.market_selection_validated_by_contract, false);
   assert.equal(run.integrity.selected_worker_unchanged_after_failure, true);
   assert.equal(run.integrity.payment_requires_callback, true);
+  assert.equal(run.integrity.settlement_amount_equals_winning_bid, true);
+  assert.equal(run.integrity.payment_permissionless_after_verification, true);
+  assert.equal(run.integrity.coordinator_cannot_cancel_verified_job, true);
+  assert.equal(run.payment.budget, run.market.winner_bid.amount);
+  assert.equal(run.market.winner_bid.worker, run.identities.selected_worker.account);
+  assert.equal(run.market.winner_bid.worker, "worker-eve.local");
 
   assert.equal(verifyAttestationSignature(run.attempts[0].report.attestation), true);
   assert.equal(verifyAttestationSignature(run.attempts[1].report.attestation), true);
@@ -112,6 +118,7 @@ test("old attempt report and old artifact report cannot be reused", () => {
       verifier_node: verifier,
       verifier_public_key: key.publicKeyHex,
       budget: nearFromTenths(200n),
+      winning_bid: nearFromTenths(200n),
       acceptance_criteria_hash: criteria,
       acceptance_suite_hash: suite,
       baseline_commit: manifest.baseline_commit,

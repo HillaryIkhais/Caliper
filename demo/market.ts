@@ -79,6 +79,8 @@ export interface MarketRound {
   valid_bids: { worker: string; amount: string }[];
   selection_rule: string;
   winner: string;
+  /** The canonical winning bid. Settlement must use this exact amount. */
+  winner_bid: { worker: string; amount: string };
   transcript_hash: string;
 }
 
@@ -232,7 +234,7 @@ export function buildMarketRound(
     mode: MARKET_MODE,
     sealed: false,
     nonce_source: "derived from round and worker for reproducible fixtures",
-    note: "Bid nonces are deterministic. This demonstrates commit/reveal mechanics; it is not a private or trustless sealed-bid auction. The contract anchors the supplied transcript hash but does not independently validate the auction or the selected worker.",
+    note: "Bid nonces are deterministic. This demonstrates commit/reveal mechanics; it is not a private or trustless sealed-bid auction. Selection happens off-chain. The contract records the supplied transcript hash, the selected worker, the escrowed maximum budget, and the winning bid, and pays exactly the winning bid. It does not independently validate the auction or the selection.",
     round_id: roundId,
     task,
     max_budget: maxBudget,
@@ -251,6 +253,7 @@ export function buildMarketRound(
     valid_bids: validBids,
     selection_rule: "lowest valid bid; ties broken by lexicographically smallest worker account; selection is computed by this local simulation",
     winner: winner.worker,
+    winner_bid: winner,
   };
 
   return { ...base, transcript_hash: transcriptHash(base) };

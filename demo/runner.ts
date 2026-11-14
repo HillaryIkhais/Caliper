@@ -84,7 +84,25 @@ export interface VerificationReport {
   ci_stderr: string;
   passed: boolean;
   passed_checks: string[];
+  isolation: IsolationReport;
   attestation: VerificationAttestation;
+}
+
+export type IsolationMode = "none" | "os";
+
+/**
+ * How the acceptance commands were executed. This is deliberately explicit:
+ * the default mode is process-level containment only and is not a security
+ * boundary against a malicious deliverable. `CALIPER_SANDBOX=os` opts into an
+ * OS sandbox and fails closed when no supported sandbox is available.
+ */
+export interface IsolationReport {
+  requested: IsolationMode;
+  enforced: boolean;
+  mechanism: string;
+  filesystem: "shared" | "confined";
+  network: "shared" | "denied";
+  note: string;
 }
 
 export interface VerifyOptions {
@@ -99,6 +117,7 @@ export interface VerifyOptions {
   manifestPath?: string;
   workDir?: string;
   reportPath?: string;
+  sandbox?: IsolationMode;
 }
 
 export function loadManifest(manifestPath = DEFAULT_MANIFEST_PATH): AcceptanceManifest {
@@ -353,18 +372,137 @@ function restoreProtectedFiles(
   }
 }
 
+const PROCESS_ONLY_ISOLATION: IsolationReport = {
+  requested: "none",
+  enforced: false,
+  mechanism: "process-only: spawnSync with scrubbed environment, fixed cwd, and a 15s timeout",
+  filesystem: "shared",
+  network: "shared",
+  note: "spawnSync is a process wrapper, not an OS security boundary. A malicious deliverable can read the host filesystem and use the network. Set CALIPER_SANDBOX=os to require an OS sandbox.",
+};
+
+export function resolveIsolationMode(raw = process.env.CALIPER_SANDBOX): IsolationMode {
+  const value = (raw ?? "").trim().toLowerCase();
+  if (value === "" || value === "none" || value === "process") return "none";
+  if (value === "os") return "os";
+  throw new Error(`unsupported CALIPER_SANDBOX value "${raw}"; expected "none" or "os"`);
+}
+
+interface SandboxRuntime {
+  mechanism: string;
+  wrap(command: string[], cwd: string, scratchDir: string): { command: string; args: string[] };
+  report: IsolationReport;
+}
+
+function quoteProfilePath(target: string): string {
+  if (/["\n\r]/.test(target)) {
+    throw new Error(`refusing to build a sandbox profile for path ${JSON.stringify(target)}`);
+  }
+  return `"${target}"`;
+}
+
+function sandboxRuntime(workRoot: string): SandboxRuntime {
+  const real = (p: string) => fs.realpathSync(p);
+
+  if (process.platform === "darwin") {
+    const tool = "/usr/bin/sandbox-exec";
+    if (!fs.existsSync(tool)) {
+      throw new Error("CALIPER_SANDBOX=os requires /usr/bin/sandbox-exec, which is unavailable");
+    }
+    return {
+      mechanism: "sandbox-exec (macOS Seatbelt): writes confined to the job workspace, network denied",
+      report: {
+        requested: "os",
+        enforced: true,
+        mechanism: "sandbox-exec (macOS Seatbelt)",
+        filesystem: "confined",
+        network: "denied",
+        note: "Acceptance commands run under a Seatbelt profile that denies network access and confines writes to the job workspace and a runner-owned scratch directory.",
+      },
+      wrap(command, cwd, scratchDir) {
+        const profilePath = path.join(workRoot, "caliper-sandbox.sb");
+        const writable = [real(cwd), real(scratchDir)]
+          .map((p) => `(subpath ${quoteProfilePath(p)})`)
+          .join(" ");
+        const profile = [
+          "(version 1)",
+          "(deny default)",
+          "(allow process*)",
+          "(allow file-read*)",
+          `(allow file-write* ${writable} (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr"))`,
+          "(allow sysctl-read)",
+          "(allow mach-lookup)",
+          "",
+        ].join("\n");
+        fs.writeFileSync(profilePath, profile);
+        return {
+          command: tool,
+          args: ["-f", profilePath, command[0], ...command.slice(1)],
+        };
+      },
+    };
+  }
+
+  if (process.platform === "linux") {
+    const candidates = ["/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/bwrap"];
+    const tool = candidates.find((candidate) => fs.existsSync(candidate));
+    if (!tool) {
+      throw new Error("CALIPER_SANDBOX=os requires bubblewrap (bwrap), which is unavailable");
+    }
+    return {
+      mechanism: "bubblewrap: read-only host, writes confined to the job workspace, network unshared",
+      report: {
+        requested: "os",
+        enforced: true,
+        mechanism: "bubblewrap (bwrap)",
+        filesystem: "confined",
+        network: "denied",
+        note: "Acceptance commands run under bubblewrap with a read-only host root, writable job and scratch directories, and an unshared network namespace.",
+      },
+      wrap(command, cwd, scratchDir) {
+        return {
+          command: tool,
+          args: [
+            "--ro-bind", "/", "/",
+            "--bind", real(cwd), real(cwd),
+            "--bind", real(scratchDir), real(scratchDir),
+            "--dev", "/dev",
+            "--unshare-net",
+            "--die-with-parent",
+            "--chdir", real(cwd),
+            "--",
+            ...command,
+          ],
+        };
+      },
+    };
+  }
+
+  throw new Error(
+    `CALIPER_SANDBOX=os is not supported on ${process.platform}; it supports macOS (sandbox-exec) and Linux (bwrap)`,
+  );
+}
+
 function runCheckedCommand(
   command: string[],
   cwd: string,
+  scratchDir: string,
+  sandbox: SandboxRuntime | null,
 ): { exit_code: number; stdout: string; stderr: string } {
-  const result = spawnSync(command[0], command.slice(1), {
+  const wrapped = sandbox ? sandbox.wrap(command, cwd, scratchDir) : {
+    command: command[0],
+    args: command.slice(1),
+  };
+  const result = spawnSync(wrapped.command, wrapped.args, {
     cwd,
     encoding: "utf8",
     timeout: 15_000,
     env: {
       PATH: process.env.PATH ?? "/usr/bin:/bin",
-      HOME: cwd,
-      TMPDIR: os.tmpdir(),
+      HOME: scratchDir,
+      TMPDIR: scratchDir,
+      TMP: scratchDir,
+      TEMP: scratchDir,
       NODE_ENV: "test",
       CI: "1",
       // Intentionally do not forward wallet keys, API keys, or the host environment.
@@ -384,6 +522,7 @@ export function verifyArtifact(options: VerifyOptions): VerificationReport {
   const pinnedCriteriaHash = computeAcceptanceCriteriaHash(manifest, baselineDir);
   const pinnedSuiteHash = computeAcceptancePolicyHash(baselineDir, manifest);
   const manifestHash = hashCanonical(manifest);
+  const isolationMode = options.sandbox ?? resolveIsolationMode();
   if (options.acceptanceCriteriaHash !== pinnedCriteriaHash) {
     throw new Error(
       `pinned acceptance criteria hash mismatch: runner computed ${pinnedCriteriaHash}`,
@@ -398,6 +537,10 @@ export function verifyArtifact(options: VerifyOptions): VerificationReport {
   fs.mkdirSync(workRoot, { recursive: true });
   const tempRoot = fs.mkdtempSync(path.join(workRoot, "caliper-run-"));
   const repoDir = path.join(tempRoot, "repo");
+  const scratchDir = path.join(tempRoot, "scratch");
+  fs.mkdirSync(scratchDir, { recursive: true });
+  const sandbox = isolationMode === "os" ? sandboxRuntime(tempRoot) : null;
+  const isolation = sandbox ? sandbox.report : PROCESS_ONLY_ISOLATION;
 
   try {
     copyTree(baselineDir, repoDir);
@@ -437,8 +580,8 @@ export function verifyArtifact(options: VerifyOptions): VerificationReport {
     // The runner always executes the pinned acceptance suite, never the worker's
     // replacement, even when the worker modified or deleted it.
     restoreProtectedFiles(baselineDir, repoDir, manifest);
-    const testRun = runCheckedCommand(manifest.test_command, repoDir);
-    const ciRun = runCheckedCommand(manifest.ci_command, repoDir);
+    const testRun = runCheckedCommand(manifest.test_command, repoDir, scratchDir, sandbox);
+    const ciRun = runCheckedCommand(manifest.ci_command, repoDir, scratchDir, sandbox);
 
     const deliverableMatchesClaim = actualDeliverableHash === options.claimedDeliverableHash;
     const clean = protected_violations.length === 0;
@@ -502,6 +645,7 @@ export function verifyArtifact(options: VerifyOptions): VerificationReport {
       ci_stderr: ciRun.stderr,
       passed,
       passed_checks: passedChecks,
+      isolation,
       attestation,
     };
 

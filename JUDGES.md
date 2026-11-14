@@ -25,22 +25,40 @@ attempt 2: Verified — passed: genuine source fix accepted by the pinned suite
 payment:   Paid (Local chain simulation ...)
 ```
 
+**What this command is:** a local simulation of market, verification, escrow, and settlement. It does not submit testnet transactions and does not run an on-chain auction.
+
 ---
 
 ## Live testnet verification
 
-The contract is deployed on NEAR testnet:
+The deployment transaction is real and final. The lifecycle is not.
 
 | Item | Value |
 |------|-------|
 | Contract | `caliper.testnet` |
 | Transaction | `HkwyEMPrVctq46oeC55D67onStJC2DtNQ3TZ97hYUL6z` |
+| Status | `FINAL` |
+| Actions | `DeployContract` + `FunctionCall` (`init`) |
 | Explorer | https://testnet.nearblocks.io/txns/HkwyEMPrVctq46oeC55D67onStJC2DtNQ3TZ97hYUL6z |
-| WASM SHA-256 | `fac3d3d2c2a4ca206085b96e6ddb9223a4bb8b4d8882ef19cd5dba717593c0a8` |
+| Deployed code hash | `Hst7gb5bXE4DoY99CgbrG2McRGBm41LkUKodpF7Fc2Bh` |
 
 Do this, see that:
-- `near view caliper.testnet get_total_allocated` → returns a positive number (contract is deployed and funded)
-- `near state caliper.testnet` → shows account exists on testnet
+
+```bash
+near view caliper.testnet get_owner
+# "caliper.testnet"
+
+near view caliper.testnet get_root
+# null
+
+near view caliper.testnet get_total_allocated
+# "0"
+
+near view caliper.testnet list_jobs
+# []
+```
+
+This proves the account exists, bytecode is deployed, and `init` executed. It does **not** prove any job, verification, or payment ran on testnet. The deployed bytecode also predates the corrected settlement logic in this working tree; redeploy before claiming on-chain lifecycle behavior.
 
 ---
 
@@ -50,11 +68,14 @@ Do this, see that:
 |------|---------|-----------------|
 | 1. Install dependencies | `npm install` | No errors |
 | 2. Run adversarial demo | `npm run demo` | Attempt 1 rejected, attempt 2 verified, payment Paid |
-| 3. Run contract tests | `cd contract && cargo test` | 39 tests pass |
-| 4. Run off-chain tests | `npm run test:node` | 20 tests pass |
+| 3. Run contract tests | `cd contract && cargo test` | Contract suite passes |
+| 4. Run off-chain tests | `npm run test:node` | Node suite passes |
 | 5. Verify exported-state fixtures | `npm run verify` | Both sample fixtures pass |
-| 6. Build wasm artifact | `cd contract && cargo build --release --target wasm32-unknown-unknown` | ~331 KB wasm produced |
-| 7. Verify testnet contract | `near view caliper.testnet get_total_allocated` | Positive number returned |
+| 6. Build wasm artifact | `cd contract && cargo build --release --target wasm32-unknown-unknown` | Wasm produced |
+| 7. Verify testnet deployment | `near view caliper.testnet get_owner` | `"caliper.testnet"` |
+| 8. Confirm lifecycle is unexecuted | `near view caliper.testnet list_jobs` | `[]` |
+
+Step 8 is not a failure. It is the honest boundary of the evidence.
 
 ---
 
@@ -66,8 +87,12 @@ Do this, see that:
 | Correction passes original suite | `demo/runs/latest/attempt-2-report.json` shows `passed: true` |
 | Policy hash recomputed before signing | `demo/runner.ts` aborts on hash mismatch |
 | Market transcript hash matches job | `integrity.market_transcript_hash_matches_job` is `true` in run.json |
+| Market is off-chain | `integrity.market_selection_validated_by_contract` is `false` |
 | Payment waits for callback | `payment.status = PaymentPending`, then `payment.state = Paid` |
 | Same worker gets correction | `selected_worker_unchanged_after_failure` is `true` |
+| Exact bid is paid | `integrity.settlement_amount_equals_winning_bid` is `true`; `payment.budget === market.winner_bid.amount` |
+| Coordinator cannot withhold | `integrity.payment_permissionless_after_verification` is `true` |
+| Coordinator cannot cancel verified work | `integrity.coordinator_cannot_cancel_verified_job` is `true` |
 
 ---
 
@@ -81,14 +106,19 @@ Do this, see that:
 6. Coordinator requests changes. Same worker remains assigned.
 7. Eve fixes `src/auth.js`.
 8. Runner executes the original pinned test and CI files.
-9. Verification passes. Coordinator approves. Local chain settles via callback.
+9. Verification passes. Payment becomes a fixed obligation.
+10. The worker (or anyone) releases it. Local chain settles via callback for exactly the winning bid.
 
 ---
 
 ## What is real vs simulated
 
-**Real code:** NEAR contract, canonical attestation, Ed25519 signing, diff computation, policy-hash recomputation, protected-file checks, test execution, payment state machine.
+**Real code:** NEAR contract, canonical attestation, Ed25519 signing, diff computation, policy-hash recomputation, protected-file checks, pinned test execution, payment state machine, permissionless settlement, revocation guards.
 
-**Simulated:** Bid nonces (deterministic for reproducibility), local chain mirror identities, no on-chain transaction invented. The UI explicitly labels this.
+**Simulated:** the bid market and winner selection (deterministic, off-chain), local chain mirror identities, and the displayed receipts. No on-chain transaction is invented. The UI labels the simulation.
 
-The live testnet contract at `caliper.testnet` confirms identical state transitions with actual NEAR settlement.
+**Verified on testnet:** deployment and `init` only. `get_root` is `null`, `get_total_allocated` is `"0"`, and `list_jobs` is `[]`. No lifecycle has run there.
+
+**Deployment caveat:** the testnet bytecode predates the corrected settlement code in this working tree.
+
+**Runner isolation:** default execution is process-only (scrubbed env, fixed cwd, timeout). It is not a security boundary. `CALIPER_SANDBOX=os` selects a fail-closed OS sandbox on macOS or Linux.

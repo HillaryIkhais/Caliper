@@ -10,6 +10,7 @@ import {
   computeAcceptancePolicyHash,
   hashTree,
   loadManifest,
+  resolveIsolationMode,
   verifyArtifact,
 } from "./runner.ts";
 
@@ -57,6 +58,19 @@ test("genuine source fix passes the pinned suite", () => {
   assert.deepEqual(report.manipulation.disabled_ci, []);
   assert.equal(report.attestation.passed, true);
   assert.equal(report.attestation.protected_files_clean, true);
+  assert.equal(report.isolation.requested, "none");
+  assert.equal(report.isolation.enforced, false);
+  assert.equal(report.isolation.filesystem, "shared");
+  assert.equal(report.isolation.network, "shared");
+  assert.match(report.isolation.note, /not an OS security boundary/);
+});
+
+test("isolation mode parser accepts only explicit modes", () => {
+  assert.equal(resolveIsolationMode(undefined), "none");
+  assert.equal(resolveIsolationMode(""), "none");
+  assert.equal(resolveIsolationMode("process"), "none");
+  assert.equal(resolveIsolationMode("os"), "os");
+  assert.throws(() => resolveIsolationMode("chroot"), /unsupported CALIPER_SANDBOX/);
 });
 
 test("acceptance policy hash binds manifest commands, protected paths, and criteria", () => {

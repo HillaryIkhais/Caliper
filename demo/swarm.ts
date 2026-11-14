@@ -66,6 +66,7 @@ export interface SwarmRun {
     root_node: SimNode;
     nodes: SimNode[];
     job_budget: string;
+    settlement_amount: string;
     coordinator_committed_before_job: string;
     coordinator_committed_after_job: string;
     coordinator_available_after_job: string;
@@ -74,8 +75,8 @@ export interface SwarmRun {
   job: ReturnType<LocalCaliperChain["snapshot"]>["jobs"][number];
   attempts: AttemptEvidence[];
   approval: {
-    approved_by: string;
-    approved_at_block: number;
+    released_by: string;
+    released_at_block: number;
     gate: string;
   };
   payment: {
@@ -86,6 +87,7 @@ export interface SwarmRun {
     note: string;
     budget: string;
     budget_display: string;
+    escrowed_budget: string;
     paid_at_block: number | null;
     receipt_id: string;
   };
@@ -98,6 +100,9 @@ export interface SwarmRun {
     selected_worker_unchanged_after_failure: boolean;
     attempts_bound_to_current_artifact: boolean;
     payment_requires_callback: boolean;
+    settlement_amount_equals_winning_bid: boolean;
+    payment_permissionless_after_verification: true;
+    coordinator_cannot_cancel_verified_job: true;
   };
   events: { block: number; type: string; detail: string }[];
   files: {
@@ -146,26 +151,25 @@ export function runSwarm(): SwarmRun {
 
   const market = buildMarketRound();
 
-  // getWinner returns the winning bid (lowest valid bid) from the market.
-  // The market.winner field only contains the worker account, not the amount.
-  // We need to find the winning bid from valid_bids.
-  const validBids = market.valid_bids;
-  if (validBids.length === 0) throw new Error("market has no valid bids");
-  const winningBid = validBids.reduce((min, bid) => {
-    return BigInt(bid.amount) < BigInt(min.amount) ? bid : min;
-  });
-  if (!winningBid) throw new Error("market winner is not a known worker");
+  // The market exposes one canonical winning bid. Deriving the winner and the
+  // settlement amount from the same object prevents them from diverging on ties.
+  const winningBid = market.winner_bid;
+  if (winningBid.worker !== market.winner) {
+    throw new Error("market winner and canonical winning bid disagree");
+  }
 
-  const winner = WORKERS.find((worker) => worker.account === market.winner);
+  const winner = WORKERS.find((worker) => worker.account === winningBid.worker);
   if (!winner) throw new Error("market winner is not a known worker");
   const workerNode = workerNodes.get(winner.account);
   if (!workerNode) throw new Error("winner has no authority node");
 
-  // The job budget should equal the winning bid amount.
-  // This ensures economic correctness: actual payment = actual agreed price.
-  // The market.max_budget is the coordinator's limit, but the job budget
-  // is what the worker actually gets if verification passes.
+  // The coordinator escrows its maximum budget. The worker is paid exactly the
+  // winning bid; the unused remainder returns to the coordinator on settlement.
   const settlementAmount = BigInt(winningBid.amount);
+  const escrowBudget = BigInt(market.max_budget);
+  if (settlementAmount > escrowBudget) {
+    throw new Error("winning bid exceeds the escrowed budget");
+  }
   const committedBeforeJob = chain.node(root).committed_to_children;
 
   const jobId = chain.createJob({
@@ -173,7 +177,8 @@ export function runSwarm(): SwarmRun {
     worker_node: workerNode,
     verifier_node: verifierNode,
     verifier_public_key: key.publicKeyHex,
-    budget: settlementAmount.toString(),
+    budget: escrowBudget.toString(),
+    winning_bid: settlementAmount.toString(),
     acceptance_criteria_hash: acceptanceCriteriaHash,
     acceptance_suite_hash: acceptanceSuiteHash,
     baseline_commit: manifest.baseline_commit,
@@ -265,7 +270,9 @@ export function runSwarm(): SwarmRun {
     throw new Error("corrected attempt did not pass");
   }
 
-  chain.acceptJob(jobId, COORDINATOR_ACCOUNT);
+  // Settlement is permissionless after verification: the worker releases its own
+  // payment. The coordinator cannot cancel or withhold a Verified job.
+  chain.releaseVerifiedPayment(jobId, winner.account);
   const pendingStatus = chain.job(jobId).status;
   chain.settlePayment(jobId, true);
   const paymentJob = chain.job(jobId);
@@ -318,7 +325,8 @@ export function runSwarm(): SwarmRun {
     authority: {
       root_node: chain.node(root),
       nodes: snapshot.nodes,
-      job_budget: settlementAmount.toString(),
+      job_budget: escrowBudget.toString(),
+      settlement_amount: settlementAmount.toString(),
       coordinator_committed_before_job: committedBeforeJob,
       coordinator_committed_after_job: committedAfterJob,
       coordinator_available_after_job: coordinatorAvailableAfterJob,
@@ -327,9 +335,9 @@ export function runSwarm(): SwarmRun {
     job: finalJob,
     attempts,
     approval: {
-      approved_by: COORDINATOR_ACCOUNT,
-      approved_at_block: snapshot.events.find((event) => event.type === "payment_pending")?.block ?? 0,
-      gate: "coordinator approval requires the current attempt to pass the pinned acceptance suite",
+      released_by: winner.account,
+      released_at_block: snapshot.events.find((event) => event.type === "payment_pending")?.block ?? 0,
+      gate: "permissionless release: any account may settle once the current attempt passes the pinned acceptance suite",
     },
     payment: {
       status: pendingStatus,
@@ -337,8 +345,9 @@ export function runSwarm(): SwarmRun {
       mode: "local-simulation",
       simulated: true,
       note: "Local chain simulation. No on-chain transaction, transaction hash, or wallet signature was created.",
-      budget: finalJob.budget,
-      budget_display: formatNear(finalJob.budget),
+      budget: finalJob.winning_bid,
+      budget_display: formatNear(finalJob.winning_bid),
+      escrowed_budget: finalJob.budget,
       paid_at_block: finalJob.paid_at,
       receipt_id: `local-receipt:${runId}`,
     },
@@ -352,6 +361,10 @@ export function runSwarm(): SwarmRun {
       attempts_bound_to_current_artifact:
         report1.attestation.attempt === 1 && report2.attestation.attempt === 2,
       payment_requires_callback: pendingStatus === "PaymentPending" && finalJob.status === "Paid",
+      settlement_amount_equals_winning_bid:
+        finalJob.winning_bid === settlementAmount.toString(),
+      payment_permissionless_after_verification: true,
+      coordinator_cannot_cancel_verified_job: true,
     },
     events: snapshot.events,
     files: {

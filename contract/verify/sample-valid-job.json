@@ -15,7 +15,7 @@
         "may_delegate": true
       },
       "allocation": "100000000000000000000000000",
-      "spent": "20000000000000000000000000",
+      "spent": "12000000000000000000000000",
       "committed_to_children": "50000000000000000000000000",
       "active": true,
       "children": [
@@ -156,6 +156,7 @@
       "verifier_holder": "verifier.caliper.local",
       "verifier_public_key": "1dfb543aac40cdf79702943bb3bb6dce08d4bb0403e9b9cf7b73e533325d1da3",
       "budget": "20000000000000000000000000",
+      "winning_bid": "12000000000000000000000000",
       "acceptance_criteria_hash": "sha256:3a36a72405527cd56c39c8b8e3e24bb909851188239b5c70b1a223144efef4bf",
       "acceptance_suite_hash": "sha256:06ca62dcf4d445fb2c4aebbfb897c81ae50eff654db58b851709538461f00472",
       "baseline_commit": "214225e264d7333447bb2b1916bd0f6974a213b8",

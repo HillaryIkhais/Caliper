@@ -47,6 +47,7 @@ export interface SimJob {
   verifier_holder: string;
   verifier_public_key: string;
   budget: Balance;
+  winning_bid: Balance;
   acceptance_criteria_hash: string;
   acceptance_suite_hash: string;
   baseline_commit: string;
@@ -78,6 +79,7 @@ export interface CreateJobInput {
   verifier_node: number;
   verifier_public_key: string;
   budget: Balance;
+  winning_bid: Balance;
   acceptance_criteria_hash: string;
   acceptance_suite_hash: string;
   baseline_commit: string;
@@ -86,6 +88,7 @@ export interface CreateJobInput {
 }
 
 const MAX_ATTEMPTS = 2;
+const VERIFICATION_TIMEOUT_BLOCKS = 1000;
 
 export class LocalCaliperChain {
   owner: string;
@@ -239,6 +242,23 @@ export class LocalCaliperChain {
       if (!allowed) throw new Error("only the owner or an ancestor may revoke");
     }
     const stack = [nodeId, ...this.descendantIds(nodeId)];
+
+    // Do not let revocation destroy a payment obligation or sabotage an
+    // in-flight verification.
+    for (const job of this.jobs.values()) {
+      const coordinatorHit = stack.includes(job.coordinator_node);
+      const roleHit = stack.includes(job.worker_node) || stack.includes(job.verifier_node);
+      if (
+        ["Verified", "PaymentPending", "PaymentFailed"].includes(job.status) &&
+        coordinatorHit
+      ) {
+        throw new Error("cannot revoke a branch with an outstanding verified payment");
+      }
+      if (job.status === "Submitted" && (coordinatorHit || roleHit)) {
+        throw new Error("cannot revoke a branch with a job awaiting verification");
+      }
+    }
+
     let branchSpent = 0n;
     for (const id of stack) {
       branchSpent += BigInt(this.node(id).spent);
@@ -304,6 +324,10 @@ export class LocalCaliperChain {
     if (BigInt(input.budget) > this.available(input.coordinator_node)) {
       throw new Error("budget exceeds coordinator uncommitted allocation");
     }
+    if (BigInt(input.winning_bid) <= 0n) throw new Error("winning bid must be positive");
+    if (BigInt(input.winning_bid) > BigInt(input.budget)) {
+      throw new Error("winning bid exceeds escrowed budget");
+    }
     for (const [label, value] of Object.entries({
       acceptance_criteria_hash: input.acceptance_criteria_hash,
       acceptance_suite_hash: input.acceptance_suite_hash,
@@ -325,6 +349,7 @@ export class LocalCaliperChain {
       verifier_holder: verifier.holder,
       verifier_public_key: input.verifier_public_key,
       budget: input.budget,
+      winning_bid: input.winning_bid,
       acceptance_criteria_hash: input.acceptance_criteria_hash,
       acceptance_suite_hash: input.acceptance_suite_hash,
       baseline_commit: input.baseline_commit,
@@ -473,13 +498,29 @@ export class LocalCaliperChain {
   acceptJob(jobId: number, caller: string): void {
     const job = this.job(jobId);
     if (caller !== job.coordinator_holder) throw new Error("only the coordinator may accept");
-    this.assertJobRoles(job);
+    this.startVerifiedPayment(job, caller);
+  }
+
+  /**
+   * Once independent verification passes, the payment obligation is fixed.
+   * Anyone may release it, so a coordinator cannot withhold settlement.
+   */
+  releaseVerifiedPayment(jobId: number, caller: string): void {
+    this.startVerifiedPayment(this.job(jobId), caller);
+  }
+
+  private startVerifiedPayment(job: SimJob, caller: string): void {
     if (job.status !== "Verified" && job.status !== "PaymentFailed") {
       throw new Error("job is not verified or retryable");
     }
     if (job.independent_passed !== true) throw new Error("job has not passed verification");
     if (job.tampering_detected) throw new Error("tampering detected");
     if (!job.verification) throw new Error("verified job has no attestation");
+    // Only the coordinator authority is required for accounting. Worker and
+    // verifier authority may be revoked without extinguishing the payment right.
+    if (!this.isAuthorityValid(job.coordinator_node)) {
+      throw new Error("coordinator authority is revoked or expired");
+    }
     const mismatches = attestationMismatches(job.verification.attestation, {
       job_id: job.id,
       attempt: job.attempt,
@@ -492,7 +533,7 @@ export class LocalCaliperChain {
     if (mismatches.length > 0) throw new Error("stale verification evidence");
     job.status = "PaymentPending";
     job.payment_error = null;
-    this.log("payment_pending", `coordinator approved payment for job ${job.id}`);
+    this.log("payment_pending", `payment released by ${caller} for job ${job.id}`);
   }
 
   settlePayment(jobId: number, success: boolean): void {
@@ -503,7 +544,7 @@ export class LocalCaliperChain {
       coordinator.committed_to_children = (
         BigInt(coordinator.committed_to_children) - BigInt(job.budget)
       ).toString();
-      coordinator.spent = (BigInt(coordinator.spent) + BigInt(job.budget)).toString();
+      coordinator.spent = (BigInt(coordinator.spent) + BigInt(job.winning_bid)).toString();
       job.status = "Paid";
       job.paid_at = this.tick();
       job.resolved_at = job.paid_at;
@@ -519,12 +560,15 @@ export class LocalCaliperChain {
   cancelJob(jobId: number, caller: string): void {
     const job = this.job(jobId);
     if (caller !== job.coordinator_holder) throw new Error("only the coordinator may cancel");
-    // Note: "Verified" is currently cancellable to handle edge cases where role
-    // revocation would otherwise block acceptance. This will be addressed in a
-    // future upgrade to preserve worker payment rights after verification.
-    if (!["Open", "Submitted", "Rejected", "Verified", "PaymentFailed"].includes(job.status)) {
-      throw new Error("job cannot be cancelled in its current state");
-    }
+    // A Verified job is a fixed payment obligation and cannot be cancelled.
+    // Submitted jobs are cancellable only after the verification timeout.
+    const cancellable =
+      job.status === "Open" ||
+      job.status === "Rejected" ||
+      (job.status === "Submitted" &&
+        job.submitted_at !== null &&
+        this.block >= job.submitted_at + VERIFICATION_TIMEOUT_BLOCKS);
+    if (!cancellable) throw new Error("job cannot be cancelled in its current state");
     job.status = "Cancelled";
     job.resolved_at = this.tick();
     this.releaseCommitment(job);
